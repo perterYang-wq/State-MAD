@@ -32,7 +32,7 @@ class LanguageModel:
         self.token_usage_tracker = TokenUsageTracker()
         self.extract_fn = extract_fn
         
-    def __call__(self, prompts:List[str], answer_process:bool=True):
+    def __call__(self, prompts:List[str], answer_process:bool=True, seed:int=None):
         # construct message
         batch_message = []
         for prompt in prompts:
@@ -50,15 +50,19 @@ class LanguageModel:
         
         tokenized_batch_message = self.llm.get_tokenizer().apply_chat_template(batch_message, tokenize=False, add_generation_prompt=True)
         
+        sampling_params = {
+            "temperature": getattr(self.llm_config, "temperature", 1),
+            "top_p": getattr(self.llm_config, "top_p", 1),
+            "max_tokens": getattr(self.llm_config, "max_tokens", 24064),
+            "stop_token_ids": [self.llm.get_tokenizer().eos_token_id],
+            "logprobs": True
+        }
+        if seed is not None:
+            sampling_params["seed"] = seed
+
         outputs = self.llm.generate(
             tokenized_batch_message,
-            sampling_params=SamplingParams(
-                temperature=getattr(self.llm_config, "temperature", 1),
-                top_p=getattr(self.llm_config, "top_p", 1),
-                max_tokens=getattr(self.llm_config, "max_tokens", 24064),
-                stop_token_ids=[self.llm.get_tokenizer().eos_token_id],
-                logprobs=True
-            )
+            sampling_params=SamplingParams(**sampling_params)
         )
         
         results_tuple = self._answer_process(outputs, answer_process)
