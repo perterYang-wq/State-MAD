@@ -31,12 +31,12 @@ Inspected artifacts include the four authoritative research documents, the Git m
 | Branch              | `work`                                                       | Active branch identified.                                    |
 | HEAD                | `84b13a9a7da5d2c9c435296f15d5d4911d69dc10`                   | Single inspected snapshot identifier.                        |
 | HEAD subject        | `Add files via upload`                                       | Provides little upstream provenance.                         |
-| Remote              | none configured                                              | Exact relationship to the official upstream cannot be mechanically verified from Git metadata. |
+| Remote              | none configured in the audited Codex Cloud sandbox           | This describes only the sandbox's Git configuration; it does not prove that the source GitHub repository lacks an upstream remote. The authoritative upstream relationship cannot be verified from the audited snapshot. |
 | Repository claim    | README identifies “Multi-Agent Debate with Memory Masking,” the MAD-M² ICLR 2026 code | Content is consistent with a MAD-M² research release, but this audit cannot certify upstream identity. |
 | Initial dirty state | clean (`git status --short --branch` showed only `## work`)  | No pre-existing user modifications observed.                 |
 | License file        | none in tracked file list                                    | README displays an MIT badge, but no tracked license text was found; provenance/reuse risk, not an E0 engineering blocker. |
 
-**Identity conclusion:** treat this as the supplied MAD-M² snapshot, not as a cryptographically verified checkout of an official remote. Before paper-facing release, record or restore an authoritative upstream URL/tag/commit and license information. This is a **P2 repository-provenance risk**; it does not prevent an isolated E0 wrapper.
+**Identity conclusion:** treat this as the supplied MAD-M² snapshot, not as a cryptographically verified checkout of an official remote. The absence of a configured remote applies only to the audited Codex Cloud sandbox and does not establish whether the source GitHub repository has an upstream remote. Before paper-facing release, verify the authoritative upstream URL/tag/commit relationship and tracked license status. The provenance information that cannot be verified from the audited snapshot is a **P2 repository-provenance risk**; it does not prevent an isolated E0 wrapper.
 
 ## 3. Current entry point and exact call graph
 
@@ -180,7 +180,9 @@ No LLM judge or semantic parser is needed or permitted.
 
 The repository has **no model-output cache**. `LanguageModel.__call__` always invokes `self.llm.generate`; no key is computed, and no lookup, hit/miss, invalid state, or collision/integrity check exists. Saved result/debate JSON is terminal logging rather than an executable replay store. There is no mechanism to return exact cached upstream messages to sibling/downstream branches.
 
-**P0 NEW MODULE:** a content-addressed, immutable message cache keyed by the frozen effective-input fields (scenario, phase/condition, role, snapshot, prompt, visible message content, model/revisions, decoding config, seed, and maximum output length). An existing valid key must return exact raw output; it must never silently regenerate. Cache status must distinguish miss, hit, and invalid/corrupt. E0 needs this to validate same-snapshot branching and replay even though E2/E3 are deferred.
+**P0 NEW MODULE:** a content-addressed, immutable message cache whose identity is derived only from the canonical effective model-visible generation input and effective generation parameters. Where applicable, the key must include the exact serialized model-visible input; exact visible message content and ordering; model and resolved revision; tokenizer/chat-template revision when it affects serialization; decoding parameters; effective seed; maximum output length; and all other effective generation parameters. Experimental and lineage metadata such as `scenario_id`, condition, phase, role, `pair_id`, and `snapshot_id` must be recorded alongside the cache entry, but must not independently change the key unless it changes the effective model-visible input or effective generation parameters.
+
+Identical effective generation inputs and generation parameters across sibling branches **MUST** resolve to the same cache key. An existing valid key must return the exact cached raw output; silent regeneration under an identical effective cache identity remains an experimental-integrity failure. Cache status must distinguish miss, hit, and invalid/corrupt. Exact upstream messages must remain replayable downstream, and raw messages must remain preserved. E0 needs this to validate same-snapshot branching and replay even though E2/E3 are deferred.
 
 The model wrapper should be **WRAPPED**, not used as the cache itself. All calls must pass through the cache boundary.
 
@@ -308,7 +310,7 @@ These must not be implemented as an end-to-end campaign before E0 PASS.
 
 ### P2 — hardening / repository risks
 
-1. Establish authoritative upstream remote/tag/commit and tracked license.
+1. Verify the authoritative upstream URL/tag/commit relationship and tracked license status, which cannot be established from the audited snapshot.
 2. Document or test the legacy `max_round=1` unbound-local defect without coupling E0 to it.
 3. Record the objective-mask score-definition issue while preserving official baseline behavior.
 4. Record residual vLLM/CUDA nondeterminism and environment lock information.
@@ -364,7 +366,7 @@ The principal risks are:
 1. no immutable cache/snapshot/lineage infrastructure exists, so scientific integrity depends on building and testing that layer before inference;
 2. parsed legacy logs do not preserve full raw outputs or per-message provenance;
 3. the current runtime lacks dependencies, GPU verification, and the model checkpoint;
-4. the Git snapshot lacks an upstream remote and license file, so “official” identity is claimed rather than independently verifiable;
+4. the audited snapshot cannot verify the authoritative upstream URL/tag/commit relationship or tracked license status, so “official” identity is claimed rather than independently verifiable; the sandbox's unconfigured remote does not prove the source repository lacks one;
 5. the official MAD-M² variant for the single frozen baseline must be selected explicitly in Stage 05.
 
 None requires changing RQ1–RQ4, exceeding the resource envelope, or reimplementing MAD. If runtime/model provisioning fails, execution must stop for human decision, but the repository structure itself supports the frozen plan through thin wrappers and isolated modules.
