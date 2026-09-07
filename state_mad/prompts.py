@@ -1,0 +1,15 @@
+from dataclasses import dataclass
+from .schema import digest
+
+@dataclass(frozen=True)
+class RenderedPrompt:
+    text: str; template_id: str; template_hash: str; prompt_hash: str
+
+def _render(text, template): return RenderedPrompt(text,template,digest(template),digest(text))
+def render_awareness_probe(s, snapshot):
+    return _render(f"AWARENESS PROBE (isolated)\nCurrent value of {s.fact_id}?\nANSWER=<one of {'|'.join(s.answer_pool.positions)}>","awareness-v1")
+def render_decision(s, snapshot, condition, visible_messages=()):
+    peer="\n".join(m.raw_content for m in visible_messages) or "NONE"
+    return _render(f"ORDINARY DECISION\nFact: {s.fact_id}\nKnown current update: {s.v_new}\nPeer evidence:\n{peer}\nANSWER=<one of {'|'.join(s.answer_pool.positions)}>","decision-v1")
+def render_peer_message(s, value, temporal_history):
+    return _render(f"PEER|fact={s.fact_id}|value={value}|confidence=high|history={temporal_history}","peer-v1")
