@@ -8,7 +8,7 @@ from state_mad.e0 import run_e0_dry
 from state_mad.grading import CLASSES, grade_output
 from state_mad.manifest import build_manifest, finalize_manifest
 from state_mad.preflight import E0RunConfig, validate_e0_preflight
-from state_mad.prompts import render_awareness_probe, render_peer_message
+from state_mad.prompts import render_awareness_probe, render_decision, render_peer_message
 from state_mad.run_store import RunStore
 from state_mad.scenarios import E0ScenarioSpec, compile_e0_scenarios
 from state_mad.schema import BackendOutput, EffectiveGenerationIdentity, GenerationRequest, MessageRecord, TokenUsage, canonical_bytes, digest
@@ -34,9 +34,17 @@ class P0Tests(unittest.TestCase):
         s=self.ss.scenarios[0]; parent=make_pre_exposure_snapshot(s); before=canonical_bytes(parent)
         probe=fork_snapshot(parent,"probe",("probe-output",)); decision=fork_snapshot(parent,"stale",("peer",))
         self.assertEqual(before,canonical_bytes(parent)); self.assertNotIn("probe-output",decision.message_ids)
-        self.assertNotEqual(render_awareness_probe(s,probe).text,"ORDINARY DECISION")
+        awareness=render_awareness_probe(s,parent)
+        ordinary=render_decision(s,decision,"stale-peer",())
+        self.assertEqual(parent.current_version_id,s.version_new_id)
+        self.assertIn(f"Known current update: {s.v_new}",awareness.text)
+        self.assertEqual(parent.visible_message_ids,())
+        self.assertNotIn("Peer evidence",awareness.text)
+        self.assertNotEqual(awareness.text,ordinary.text)
         a=render_peer_message(s,s.v_old,"x").text; b=render_peer_message(s,s.v_wrong,"x").text
         self.assertEqual(a.replace(s.v_old,"VALUE"),b.replace(s.v_wrong,"VALUE"))
+        with self.assertRaises(ValueError):
+            render_awareness_probe(s,replace(parent,current_version_id=s.version_old_id))
     def test_cache_identity_reuse_corruption_and_no_regeneration(self):
         with tempfile.TemporaryDirectory() as d:
             cache=MessageCache(d); backend=ScriptedBackend(self.ss.scenarios); wrapped=CachedBackend(backend,cache)
@@ -85,6 +93,8 @@ class P0Tests(unittest.TestCase):
             self.assertEqual(len(tuple((store.run_dir/"messages").glob("*.json"))),80)
             self.assertTrue(result["lineage"]["passed"]); self.assertFalse(result["scientific_result"])
             self.assertEqual(result["report"]["status"],"PASS_TARGET"); self.assertEqual(len(result["report"]["confirmed_regressions"]),4)
+            probe_ids={m.message_id for m in result["messages"] if m.message_id.endswith(":awareness:output")}
+            self.assertTrue(all(not (set(path)&probe_ids) for path in result["lineage"]["paths"].values()))
             self.assertTrue(all(c.total_tokens==c.input_tokens+c.output_tokens for c in result["calls"]))
             replay=run_e0_dry(CachedBackend(backend,MessageCache(Path(d)/"cache")))
             self.assertEqual(backend.calls,48); self.assertTrue(all(c.cache_status=="hit" and c.generated_total_tokens==0 for c in replay["calls"]))

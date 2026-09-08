@@ -7,7 +7,9 @@ class RenderedPrompt:
 
 def _render(text, template): return RenderedPrompt(text,template,digest(template),digest(text))
 def render_awareness_probe(s, snapshot):
-    return _render(f"AWARENESS PROBE (isolated)\nCurrent value of {s.fact_id}?\nANSWER=<one of {'|'.join(s.answer_pool.positions)}>","awareness-v1")
+    if snapshot.current_version_id != s.version_new_id:
+        raise ValueError("awareness snapshot does not contain the authoritative current version")
+    return _render(f"AWARENESS PROBE (isolated)\nKnown current update: {s.v_new}\nCurrent value of {s.fact_id}?\nANSWER=<one of {'|'.join(s.answer_pool.positions)}>","awareness-v2")
 def render_decision(s, snapshot, condition, visible_messages=()):
     peer="\n".join(m.raw_content for m in visible_messages) or "NONE"
     return _render(f"ORDINARY DECISION\nFact: {s.fact_id}\nKnown current update: {s.v_new}\nPeer evidence:\n{peer}\nANSWER=<one of {'|'.join(s.answer_pool.positions)}>","decision-v1")
