@@ -45,6 +45,32 @@ class P0Tests(unittest.TestCase):
         self.assertEqual(a.replace(s.v_old,"VALUE"),b.replace(s.v_wrong,"VALUE"))
         with self.assertRaises(ValueError):
             render_awareness_probe(s,replace(parent,current_version_id=s.version_old_id))
+    def test_decision_response_contract_and_template_pairing(self):
+        s=self.ss.scenarios[0]; parent=make_pre_exposure_snapshot(s)
+        expected_awareness=(f"AWARENESS PROBE (isolated)\nKnown current update: {s.v_new}\n"
+                            f"Current value of {s.fact_id}?\n"
+                            f"ANSWER=<one of {'|'.join(s.answer_pool.positions)}>")
+        self.assertEqual(render_awareness_probe(s,parent).text,expected_awareness)
+
+        current_peer=MessageRecord("current-peer",digest("current"),
+            render_peer_message(s,s.v_new,"created-after-update").text,"source","target",(),
+            s.fact_id,s.version_new_id,"current","current","exposure","model")
+        stale_peer=MessageRecord("stale-peer",digest("stale"),
+            render_peer_message(s,s.v_old,"created-before-update").text,"source","target",(),
+            s.fact_id,s.version_old_id,"current","stale","exposure","model")
+        current=render_decision(s,fork_snapshot(parent,"current-peer",(current_peer.message_id,)),
+                                "current-peer",(current_peer,))
+        stale=render_decision(s,fork_snapshot(parent,"stale-peer",(stale_peer.message_id,)),
+                              "stale-peer",(stale_peer,))
+        schema=f"ANSWER=<one of {'|'.join(s.answer_pool.positions)}>"
+        for prompt in (current,stale):
+            self.assertEqual(prompt.template_id,"decision-v2")
+            self.assertIn("Output exactly one line and nothing else:\n"+schema,prompt.text)
+            self.assertEqual(prompt.text.count("ANSWER="),1)
+            self.assertEqual(prompt.text.splitlines()[-1],schema)
+        self.assertEqual(current.template_hash,stale.template_hash)
+        self.assertEqual(current.text.replace(current_peer.raw_content,"PEER_CONTENT"),
+                         stale.text.replace(stale_peer.raw_content,"PEER_CONTENT"))
     def test_cache_identity_reuse_corruption_and_no_regeneration(self):
         with tempfile.TemporaryDirectory() as d:
             cache=MessageCache(d); backend=ScriptedBackend(self.ss.scenarios); wrapped=CachedBackend(backend,cache)
