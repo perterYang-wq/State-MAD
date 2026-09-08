@@ -49,8 +49,17 @@ class P0Tests(unittest.TestCase):
         s=self.ss.scenarios[0]; parent=make_pre_exposure_snapshot(s)
         expected_awareness=(f"AWARENESS PROBE (isolated)\nKnown current update: {s.v_new}\n"
                             f"Current value of {s.fact_id}?\n"
+                            "Output exactly one line and nothing else:\n"
                             f"ANSWER=<one of {'|'.join(s.answer_pool.positions)}>")
-        self.assertEqual(render_awareness_probe(s,parent).text,expected_awareness)
+        awareness=render_awareness_probe(s,parent)
+        schema=f"ANSWER=<one of {'|'.join(s.answer_pool.positions)}>"
+        self.assertEqual(awareness.text,expected_awareness)
+        self.assertEqual(awareness.template_id,"awareness-v3")
+        self.assertIn(f"Known current update: {s.v_new}",awareness.text)
+        self.assertNotIn("Peer evidence",awareness.text)
+        self.assertEqual(awareness.text.count("ANSWER="),1)
+        self.assertEqual(awareness.text.splitlines()[-2:],
+                         ["Output exactly one line and nothing else:",schema])
 
         current_peer=MessageRecord("current-peer",digest("current"),
             render_peer_message(s,s.v_new,"created-after-update").text,"source","target",(),
@@ -62,7 +71,10 @@ class P0Tests(unittest.TestCase):
                                 "current-peer",(current_peer,))
         stale=render_decision(s,fork_snapshot(parent,"stale-peer",(stale_peer.message_id,)),
                               "stale-peer",(stale_peer,))
-        schema=f"ANSWER=<one of {'|'.join(s.answer_pool.positions)}>"
+        expected_decision=lambda peer: (f"ORDINARY DECISION\nFact: {s.fact_id}\nKnown current update: {s.v_new}\n"
+                                        f"Peer evidence:\n{peer}\nOutput exactly one line and nothing else:\n{schema}")
+        self.assertEqual(current.text,expected_decision(current_peer.raw_content))
+        self.assertEqual(stale.text,expected_decision(stale_peer.raw_content))
         for prompt in (current,stale):
             self.assertEqual(prompt.template_id,"decision-v2")
             self.assertIn("Output exactly one line and nothing else:\n"+schema,prompt.text)
@@ -71,6 +83,35 @@ class P0Tests(unittest.TestCase):
         self.assertEqual(current.template_hash,stale.template_hash)
         self.assertEqual(current.text.replace(current_peer.raw_content,"PEER_CONTENT"),
                          stale.text.replace(stale_peer.raw_content,"PEER_CONTENT"))
+        peer=render_peer_message(s,s.v_old,"created-before-update")
+        self.assertEqual(peer.template_id,"peer-v1")
+        self.assertEqual(peer.text,f"PEER|fact={s.fact_id}|value={s.v_old}|confidence=high|history=created-before-update")
+        self.assertNotEqual(awareness.text,current.text)
+
+    def test_awareness_only_identity_change_and_frozen_behavior(self):
+        s=self.ss.scenarios[0]; parent=make_pre_exposure_snapshot(s); config=E0RunConfig()
+        awareness=render_awareness_probe(s,parent)
+        old_awareness=(f"AWARENESS PROBE (isolated)\nKnown current update: {s.v_new}\n"
+                       f"Current value of {s.fact_id}?\nANSWER=<one of {'|'.join(s.answer_pool.positions)}>")
+        current_peer=MessageRecord("current-peer",digest("current"),
+            render_peer_message(s,s.v_new,"created-after-update").text,"source","target",(),
+            s.fact_id,s.version_new_id,"current","current","exposure","model")
+        decision=render_decision(s,fork_snapshot(parent,"current-peer",(current_peer.message_id,)),
+                                 "current-peer",(current_peer,))
+        identity=lambda text: EffectiveGenerationIdentity(
+            "State-MAD strict categorical response",text,config.models[0],config.model_revision,
+            config.models[0],config.tokenizer_revision,"chat-template-v1",
+            (("temperature",config.temperature),("top_p",config.top_p)),config.seed,config.max_new_tokens)
+        self.assertNotEqual(build_cache_key(identity(old_awareness)),build_cache_key(identity(awareness.text)))
+        expected_decision=(f"ORDINARY DECISION\nFact: {s.fact_id}\nKnown current update: {s.v_new}\n"
+                           f"Peer evidence:\n{current_peer.raw_content}\nOutput exactly one line and nothing else:\n"
+                           f"ANSWER=<one of {'|'.join(s.answer_pool.positions)}>")
+        self.assertEqual(build_cache_key(identity(decision.text)),build_cache_key(identity(expected_decision)))
+        self.assertEqual(config.max_new_tokens,32)
+        self.assertEqual((config.seed,config.temperature,config.top_p),(7,0.0,1.0))
+        self.assertEqual(CLASSES,("CURRENT","STALE","STATIC_WRONG","OTHER/INVALID"))
+        self.assertEqual(grade_output(f"Current value of {s.fact_id}? ANSWER={s.v_new}",s.answer_pool).answer_class,
+                         "OTHER/INVALID")
     def test_cache_identity_reuse_corruption_and_no_regeneration(self):
         with tempfile.TemporaryDirectory() as d:
             cache=MessageCache(d); backend=ScriptedBackend(self.ss.scenarios); wrapped=CachedBackend(backend,cache)
