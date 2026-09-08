@@ -12,10 +12,13 @@ class RunStore:
     def append_call(self,r): self._append("calls.jsonl",r)
     def append_lineage(self,r): self._append("lineage.jsonl",r)
     def put_message(self,m):
-        p=self.run_dir/"messages"/(m.content_hash.replace(":","_")+".json")
+        # A message record's identity is its message_id.  Its content_hash only
+        # identifies the raw model text, which may legitimately be repeated by
+        # distinct calls with different lineage or experimental metadata.
+        p=self.run_dir/"messages"/(digest(m.message_id).replace(":","_")+".json")
         data=canonical_bytes(m)
         if p.exists():
-            if p.read_bytes()!=data: raise RuntimeError("message hash collision")
+            if p.read_bytes()!=data: raise RuntimeError("message identity collision")
             return
         with open(p,"xb") as f: f.write(data); f.flush(); os.fsync(f.fileno())
     def write_once(self,name,value):
