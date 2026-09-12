@@ -50,3 +50,87 @@ def evaluate_e1(rows, scenario_ids):
         "stale_vs_static_wrong":(sar["stale-peer"]-sar["static-wrong"]) if denom else None,
         "paired_stale_static_wrong_concordance":concordance,"gate_2":gate2,"gate_3":gate3,
         "tokens":{"calls":call_tokens,"by_scenario":by_scenario,"by_condition":by_condition,"total":totals}}
+
+
+def evaluate_e2_retransmission(rows, eligibility=None, topology=None, integrity=None):
+    """Pure conditional second-hop report; completed invalid answers are votes."""
+    rows=tuple(rows); eligibility=eligibility or {}; topology=topology or {}; integrity=integrity or {}
+    candidate_ids=tuple(eligibility.get("candidate_ids", ()))
+    e1_ids=tuple(eligibility.get("eligible_ids", ())); by={sid:{} for sid in candidate_ids}
+    duplicates=[]
+    allowed={"relay-awareness","relay-stale-replay","relay-current-replay"}
+    for row in rows:
+        if row.get("condition") not in allowed: raise ValueError("UNEXPECTED_RELAY_CONDITION:"+str(row.get("condition")))
+        key=(row["scenario_id"],row["condition"])
+        if row["condition"] in by.setdefault(row["scenario_id"],{}): duplicates.append(key)
+        else: by[row["scenario_id"]][row["condition"]]=row
+    if duplicates: raise ValueError("DUPLICATE_RELAY_ROW:"+repr(tuple(duplicates)))
+    aware=[]; completed=[]; included=[]; excluded={}
+    for sid in candidate_ids:
+        reasons=[]; arms=by.get(sid,{})
+        if sid not in e1_ids: reasons.append("NOT_E1_ELIGIBLE")
+        exact=integrity.get(sid,{}).get("exact_replay")
+        if not exact: reasons.append("INVALID_EXACT_REPLAY")
+        awareness=arms.get("relay-awareness",arms.get("awareness",{}))
+        if awareness.get("answer_class")=="CURRENT": aware.append(sid)
+        else: reasons.append("RELAY_NOT_CURRENT_AWARE")
+        stale=arms.get("relay-stale-replay",arms.get("stale",{})); current=arms.get("relay-current-replay",arms.get("current",{}))
+        complete=all(x and x.get("answer_class") is not None and not x.get("infrastructure_failure",False) for x in (stale,current))
+        if complete: completed.append(sid)
+        else: reasons.append("INCOMPLETE_MATCHED_PAIR")
+        parent=topology.get(sid,{}); same=parent.get("same_parent", stale.get("parent_snapshot_hash") is not None and stale.get("parent_snapshot_hash")==current.get("parent_snapshot_hash"))
+        if not same: reasons.append("PARENT_MISMATCH")
+        if integrity.get(sid,{}).get("infrastructure_failure",False): reasons.append("INFRASTRUCTURE_FAILURE")
+        if reasons: excluded[sid]=tuple(dict.fromkeys(reasons))
+        else: included.append(sid)
+    treatment=sum(by[s].get("relay-stale-replay",by[s].get("stale",{})).get("answer_class")=="STALE" for s in included)
+    control=sum(by[s].get("relay-current-replay",by[s].get("current",{})).get("answer_class")=="STALE" for s in included)
+    n=len(included); tr=treatment/n if n else None; cr=control/n if n else None
+    if n<8: gate="NOT ESTIMABLE AT PILOT SCALE"
+    elif treatment>=2 and tr-cr>0: gate="SECOND-HOP-POSITIVE PILOT"
+    elif n>=10 and treatment==0: gate="SECONDARY RETRANSMISSION UNSUPPORTED"
+    else: gate="NO POSITIVE/UNSUPPORTED GATE CONCLUSION"
+    return {"candidate_ids":candidate_ids,"candidate_n":len(candidate_ids),"e1_eligible_ids":e1_ids,
+        "e1_eligible_n":len(e1_ids),"relay_aware_ids":tuple(aware),"relay_aware_n":len(aware),
+        "completed_matched_pair_ids":tuple(completed),"completed_matched_pair_n":len(completed),
+        "included_denominator_ids":tuple(included),"included_denominator_n":n,"excluded":excluded,
+        "stale_treatment_count":treatment,"stale_treatment_rate":tr,
+        "current_control_stale_count":control,"current_control_stale_rate":cr,
+        "paired_difference":None if n==0 else tr-cr,"srr_cond":tr,"gate_4":gate,"interpretation":"conditional"}
+
+
+def evaluate_e2_fscr(final_votes, lineage_report=None, system_eligibility=None):
+    """Evaluate all three synchronized, diagnostic E2 FSCR tiers."""
+    lineage_report=lineage_report or {}; system_eligibility=system_eligibility or {}
+    ordinary_d=[]; exposure_d=[]; retransmission_d=[]
+    ordinary_x={}; exposure_x={}; retransmission_x={}; ordinary=[]; exposure=[]; retransmission=[]
+    verified=lineage_report.get("system_cases",{})
+    for case in final_votes:
+        cid=case["system_case_id"]; votes=tuple(case.get("votes",()))
+        reasons=[]
+        if not case.get("complete",False) or len(votes)!=3: reasons.append("INCOMPLETE_FINAL_PHASE")
+        if len({v.get("author") for v in votes})!=3 or {v.get("author") for v in votes}!={"source","target","relay"}: reasons.append("INVALID_FINAL_ROLES")
+        if any(v.get("phase_id")!=case.get("final_vote_phase_id") for v in votes): reasons.append("MIXED_FINAL_PHASE")
+        if any(v.get("condition")=="source-stale-seed" or v.get("pre_update",False) for v in votes): reasons.append("PREUPDATE_SEED_VOTE")
+        if case.get("communication_edges"): reasons.append("FINAL_READOUT_COMMUNICATION")
+        if system_eligibility and not system_eligibility.get(cid,True): reasons.append("SYSTEM_INELIGIBLE")
+        if reasons:
+            ordinary_x[cid]=tuple(dict.fromkeys(reasons)); exposure_x[cid]=ordinary_x[cid]; retransmission_x[cid]=ordinary_x[cid]
+            continue
+        ordinary_d.append(cid); stale={v.get("author") for v in votes if v.get("answer_class")=="STALE"}
+        if len(stale)>=2:
+            ordinary.append(cid)
+        evidence=verified.get(cid,{})
+        if evidence.get("tier_b_evaluable"):
+            exposure_d.append(cid)
+            if len(stale)>=2 and evidence.get("tier_b_predicate"): exposure.append(cid)
+        else: exposure_x[cid]=tuple(evidence.get("errors",("TIER_B_NOT_EVALUABLE",)))
+        if evidence.get("tier_c_evaluable"):
+            retransmission_d.append(cid)
+            if len(stale)>=2 and evidence.get("tier_c_predicate"): retransmission.append(cid)
+        else: retransmission_x[cid]=tuple(evidence.get("errors",("TIER_C_NOT_EVALUABLE",)))
+    def metric(ids,denom,excluded): return {"numerator_ids":tuple(ids),"numerator_n":len(ids),"denominator_ids":tuple(denom),"denominator_n":len(denom),"rate":len(ids)/len(denom) if denom else None,"excluded":excluded}
+    return {"ordinary_fscr":metric(ordinary,ordinary_d,ordinary_x),
+        "exposure_induced_fscr":metric(exposure,exposure_d,exposure_x),
+        "retransmission_supported_fscr":metric(retransmission,retransmission_d,retransmission_x),
+        "interpretation":"conditional/diagnostic","independent_retransmission_claim":False}
