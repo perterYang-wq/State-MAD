@@ -33,7 +33,11 @@ def validate_e1_lineage(messages, edges, decisions, probe_message_ids):
             seen.add(item); stack.extend(parents[item])
         return seen
     expected={"no-peer":0,"current-peer":1,"stale-peer":1,"static-wrong":1}
+    if set(decisions)!=set(expected): errors.append("INCOMPLETE_DECISION_ARMS")
     for condition,mid in decisions.items():
+        if condition not in expected:
+            continue
+        if mid not in by_id: errors.append(f"MISSING_DECISION_MESSAGE:{mid}")
         found=ancestors(mid); peer=[by_id[x] for x in found if x in by_id and by_id[x].phase_id=="exposure"]
         if len(peer)!=expected[condition]: errors.append(f"PEER_ANCESTRY:{condition}:{mid}")
         if found & set(probe_message_ids): errors.append(f"AWARENESS_CONTAMINATION:{mid}")

@@ -77,12 +77,18 @@ def run_e1(config: E1RunConfig, cached_backend, run_store, backend_probe=None, p
     probe=backend_probe or {"seed_supported":True,"model_available":True,"tokenizer_available":True,"backend":"fake"}
     preflight=validate_e1_preflight(config,scenarios.scenarios,probe)
     if not preflight["passed"]: raise RuntimeError("preflight failed: "+",".join(preflight["errors"]))
+    peer_material={}
+    for scenario in scenarios.scenarios:
+        peers,control=build_e1_peer_messages(scenario,peer_token_counter)
+        peer_material[scenario.scenario_id]=(peers,control)
+    if config.mode=="scientific" and any(
+            not control["token_counts_exact_match"] for _,control in peer_material.values()):
+        # This is a whole-scenario-set preflight: no generation may have occurred.
+        raise RuntimeError("NEEDS HUMAN DECISION: frozen peer-v1 token counts do not match")
     calls=[]; messages=[]; edges=[]; rows=[]; probe_ids=[]; decision_ids={}; provenance=[]; peer_controls={}; current_origins=set(); topology={}
     for s in scenarios.scenarios:
         parent=make_pre_exposure_snapshot(s); frozen_parent=parent.snapshot_hash
-        peers,control=build_e1_peer_messages(s,peer_token_counter); peer_controls[s.scenario_id]=control
-        if config.mode=="scientific" and not control["token_counts_exact_match"]:
-            raise RuntimeError("NEEDS HUMAN DECISION: frozen peer-v1 token counts do not match")
+        peers,control=peer_material[s.scenario_id]; peer_controls[s.scenario_id]=control
         messages.extend(peers.values())
         specs=[("awareness",render_awareness_probe(s,parent),fork_snapshot(parent,"awareness"),())]
         no_peer=fork_snapshot(parent,"no-peer")

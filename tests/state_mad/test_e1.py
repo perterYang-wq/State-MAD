@@ -5,21 +5,23 @@ from dataclasses import replace
 from pathlib import Path
 
 from state_mad.backend import CachedBackend
-from state_mad.cache import MessageCache, build_cache_key
-from state_mad.e1 import build_e1_peer_messages, run_e1_dry
+from state_mad.cache import MessageCache
+from state_mad.e1 import build_e1_peer_messages, run_e1, run_e1_dry
 from state_mad.grading import CLASSES, grade_output
+from state_mad.lineage import validate_e1_lineage
 from state_mad.metrics import E1_ARMS, evaluate_e1
 from state_mad.preflight import E1RunConfig, validate_e1_preflight
 from state_mad.prompts import render_awareness_probe, render_decision, render_peer_message
 from state_mad.run_store import RunStore
-from state_mad.scenarios import E1ScenarioSpec, compile_e0_scenarios, compile_e1_scenarios
+from state_mad.scenarios import E0ScenarioSpec, E1ScenarioSpec, compile_e0_scenarios, compile_e1_scenarios
 from state_mad.schema import (BackendOutput, EffectiveGenerationIdentity,
-                              GenerationRequest, TokenUsage, canonical_bytes, digest)
+                              GenerationRequest, TokenUsage, digest)
 from state_mad.snapshots import make_pre_exposure_snapshot
 from state_mad.validation import ScenarioValidationError, validate_e1_scenario_set
 
 
 E0_HASH="sha256:9d8d2e6cf9f03d98cc81f4823ad36aae1f5dea3eaaa94c5f745b47e5a248ec50"
+E0_SCIENTIFIC_HASH="sha256:8d6e36a6c82d3c79939b5a98c7af4937ff7274ab991695c4fa31ff1e58667e57"
 
 
 class ScriptedE1Backend:
@@ -30,6 +32,13 @@ class ScriptedE1Backend:
         elif request.condition=="static-wrong": value=scenario.v_wrong
         else: value=scenario.v_new
         return BackendOutput("ANSWER="+value,TokenUsage(11,2,13))
+
+
+class CountingBackend:
+    def __init__(self): self.calls=0
+    def generate(self, request):
+        self.calls+=1
+        return BackendOutput("ANSWER=ALPHA",TokenUsage(2,1,3))
 
 
 def metric_rows(stale=0, current_stale=0, static_stale=0, count=40):
@@ -59,6 +68,7 @@ class E1Tests(unittest.TestCase):
         report=validate_e1_scenario_set(self.ss.scenarios)
         self.assertTrue(report.passed); self.assertLessEqual(report.balance["max_delta"],1)
         self.assertEqual(compile_e0_scenarios().scenario_set_hash,E0_HASH)
+        self.assertEqual(compile_e0_scenarios(E0ScenarioSpec(count=16,seed=7)).scenario_set_hash,E0_SCIENTIFIC_HASH)
 
     def test_compiler_and_validator_fail_closed(self):
         for count in (39,41):
@@ -83,10 +93,15 @@ class E1Tests(unittest.TestCase):
 
     def test_peer_semantics_and_matching_surface(self):
         scenario=self.ss.scenarios[0]; peers,check=build_e1_peer_messages(scenario,lambda text: len(text.encode()))
+        self.assertIn(f"|value={scenario.v_new}|",peers["current-peer"].raw_content)
+        self.assertEqual(peers["current-peer"].version_id,scenario.version_new_id)
+        self.assertIn(f"|value={scenario.v_old}|",peers["stale-peer"].raw_content)
+        self.assertEqual(peers["stale-peer"].version_id,scenario.version_old_id)
         self.assertEqual((peers["stale-peer"].generation_validity,peers["stale-peer"].decision_validity),("current","stale"))
         self.assertIn("correct_when_created_then_superseded",peers["stale-peer"].raw_content)
         self.assertEqual((peers["static-wrong"].generation_validity,peers["static-wrong"].decision_validity),("never_current","static_wrong"))
         self.assertEqual(peers["static-wrong"].version_id,scenario.fact_id+":v_wrong")
+        self.assertIn(f"|value={scenario.v_wrong}|",peers["static-wrong"].raw_content)
         self.assertIn("never_current",peers["static-wrong"].raw_content)
         self.assertTrue(all(x["template_id"]=="peer-v1" for x in check["renderings"].values()))
         self.assertTrue(all(isinstance(x["token_count"],int) for x in check["renderings"].values()))
@@ -122,8 +137,54 @@ class E1Tests(unittest.TestCase):
 
     def test_cache_identity_cross_experiment_reuse(self):
         identity=EffectiveGenerationIdentity("s","u","m","r","t","tr","c",(("temperature",0),),7,9)
-        self.assertEqual(build_cache_key(identity),build_cache_key(identity))
-        self.assertNotEqual(build_cache_key(identity),build_cache_key(replace(identity,user_input="different")))
+        with tempfile.TemporaryDirectory() as directory:
+            backend=CountingBackend(); cached=CachedBackend(backend,MessageCache(directory))
+            request=lambda request_id,experiment,ident: GenerationRequest(
+                request_id,ident,"shared-scenario",experiment,"decision",experiment+":condition",
+                experiment+":pair","target","target",experiment+":snapshot",None,experiment+":branch")
+            first=cached.generate(request("e0-call","E0",identity))
+            second=cached.generate(request("e1-call","E1",identity))
+            changed=cached.generate(request("e1-changed","E1",replace(identity,user_input="different")))
+            self.assertEqual((first.cache_status,second.cache_status,changed.cache_status),("miss","hit","miss"))
+            self.assertEqual(backend.calls,2)
+            self.assertEqual(second.generated_usage.total_tokens,0)
+
+    def test_lineage_rejects_missing_decision_arm(self):
+        report=validate_e1_lineage([],[],{"no-peer":"no-peer-output"},())
+        self.assertFalse(report["passed"])
+        self.assertIn("INCOMPLETE_DECISION_ARMS",report["errors"])
+
+    def test_scientific_peer_mismatch_preflights_all_scenarios_before_generation(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory); config=E1RunConfig(mode="scientific",run_id="scientific-e1",
+                cache_root=str(root/"cache"),run_store_root=str(root/"runs"),
+                model_revision="model-revision",tokenizer_revision="tokenizer-revision")
+            backend=CountingBackend(); backend.scientific_backend=True
+            cached=CachedBackend(backend,MessageCache(root/"cache"/"scientific"))
+            store=RunStore(root/"runs"/"scientific").create(config.run_id)
+            def late_mismatch(text):
+                return 6 if "fact-e1-40" in text and "history=never_current" in text else 5
+            probe={"seed_supported":True,"model_available":True,"tokenizer_available":True,"backend":"language-model"}
+            with self.assertRaisesRegex(RuntimeError,"NEEDS HUMAN DECISION"):
+                run_e1(config,cached,store,probe,late_mismatch)
+            self.assertEqual(backend.calls,0)
+
+    def test_runtime_provenance_survives_manifest_persistence(self):
+        runtime={"seed_supported":True,"model_available":True,"tokenizer_available":True,"backend":"scripted",
+            "backend_version":"1.2.3","torch_version":"2.test","transformers_version":"4.test",
+            "vllm_version":"0.test","gpu/runtime":{"gpu":"synthetic","runtime":"none"},
+            "quantization":"none","batching":{"size":1},"context":{"max_sequence":4096}}
+        with tempfile.TemporaryDirectory() as directory:
+            backend=ScriptedE1Backend(self.ss.scenarios)
+            store=RunStore(Path(directory)/"runs").create("runtime-provenance")
+            result=run_e1(E1RunConfig(run_id="runtime-provenance"),
+                CachedBackend(backend,MessageCache(Path(directory)/"cache")),store,runtime)
+            persisted=json.loads((store.run_dir/"manifest.json").read_text())
+            self.assertEqual(result["manifest"]["effective_generation"]["runtime"],runtime)
+            self.assertEqual(persisted["effective_generation"]["runtime"],runtime)
+            self.assertEqual(persisted["effective_generation"]["quantization"],"none")
+            self.assertEqual(persisted["effective_generation"]["batching"],{"size":1})
+            self.assertEqual(persisted["effective_generation"]["context"],{"max_sequence":4096})
 
     def test_full_model_free_run_artifacts_lineage_cache_and_nonoverwrite(self):
         with tempfile.TemporaryDirectory() as directory:
