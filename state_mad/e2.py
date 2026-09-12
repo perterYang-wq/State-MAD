@@ -17,7 +17,8 @@ from .lineage import validate_e2_lineage
 from .manifest import build_manifest, finalize_manifest
 from .metrics import evaluate_e2_fscr, evaluate_e2_retransmission
 from .preflight import validate_e2_preflight
-from .prompts import render_awareness_probe, render_decision
+from .prompts import render_awareness_probe, render_decision, render_e1_peer_message
+from .backend import FakeBackend
 from .schema import (AnswerPool, CallRecord, EffectiveGenerationIdentity,
                      GenerationRequest, LineageRecord, MessageRecord, ScenarioRecord, Snapshot,
                      digest)
@@ -219,7 +220,13 @@ def _load_e1_run(e1_run_dir: str | Path, expectation: E1RunExpectation):
             peer = by_message.get(call.parent_message_ids[0])
             if peer is None: raise E2IntegrityError("MISSING_MESSAGE",call.parent_message_ids[0])
             expected_validity=("current","stale" if condition=="stale-peer" else "current")
-            if (peer.message_id,peer.author,peer.recipient,peer.fact_id,peer.generation_validity,peer.decision_validity)!=(call.parent_message_ids[0],"source","target",scenario.fact_id,*expected_validity):
+            expected_value=scenario.v_old if condition=="stale-peer" else scenario.v_new
+            expected_version=scenario.version_old_id if condition=="stale-peer" else scenario.version_new_id
+            expected_text=render_e1_peer_message(scenario,expected_value,1,0 if condition=="stale-peer" else 1).text
+            if (peer.message_id,peer.author,peer.recipient,peer.fact_id,peer.version_id,
+                peer.generation_validity,peer.decision_validity,peer.phase_id,peer.creation_source,
+                peer.raw_content,peer.content_hash)!=(call.parent_message_ids[0],"source","target",scenario.fact_id,
+                expected_version,*expected_validity,"exposure","deterministic",expected_text,digest(expected_text)):
                 raise E2IntegrityError("INVALID_E1_EXPOSURE",condition)
             if message.content_hash!=digest(call.raw_output) or message.content_hash!=digest(message.raw_content):
                 raise E2IntegrityError("CONTENT_HASH_MISMATCH",condition)
@@ -411,7 +418,8 @@ def _e2_call(request, result, scenario, config, condition, author, parent_ids):
         scenario.fact_id,scenario.version_new_id,"not_applicable","decision_output",request.phase,"model")
     call=CallRecord(request.request_id,config.run_id,scenario.scenario_id,"E2",condition,request.pair_id,
         message_id,author,"decision",tuple(parent_ids),scenario.fact_id,scenario.version_new_id,"not_applicable",
-        "decision_output","current" if condition in {"relay-awareness","source-final"} else "derived_from_probe",
+        "decision_output","current" if condition=="relay-awareness" and grade.answer_class=="CURRENT" else
+        "derived_from_probe" if condition=="relay-awareness" else "not_applicable",
         "not_applicable","not_applicable",digest(request.identity.user_input),request.snapshot_hash,config.models[0],
         config.model_revision,config.tokenizer_revision,config.seed,digest(config),result.raw_output,grade.parsed_output,
         grade.answer_class,result.usage.input_tokens,result.usage.output_tokens,result.usage.total_tokens,
@@ -423,9 +431,29 @@ def _e2_call(request, result, scenario, config, condition, author, parent_ids):
     return call,message,provenance
 
 
+def validate_e2_runtime_binding(config, cached_backend, run_store):
+    """Bind scientific configuration to injected objects without generating."""
+    if config.mode!="scientific": return {"passed":True,"errors":(),"scientific":False}
+    errors=[]; backend=getattr(cached_backend,"backend",None)
+    if isinstance(backend,FakeBackend) or not getattr(backend,"scientific_backend",False):
+        errors.append("ACTUAL_SCIENTIFIC_BACKEND")
+    expected_cache=Path(config.cache_root or "")/config.mode
+    if Path(getattr(getattr(cached_backend,"cache",None),"root","")).resolve()!=expected_cache.resolve():
+        errors.append("ACTUAL_CACHE_ROOT")
+    expected_run=Path(config.run_store_root or "")/config.mode/config.run_id
+    if Path(getattr(run_store,"run_dir","")).resolve()!=expected_run.resolve(): errors.append("ACTUAL_RUN_STORE")
+    run_dir=getattr(run_store,"run_dir",None)
+    if run_dir is None or not Path(run_dir).is_dir() or {p.name for p in Path(run_dir).iterdir()}!={"messages"} or any((Path(run_dir)/"messages").iterdir()):
+        errors.append("RUN_STORE_NOT_NEW")
+    if not (0<config.projected_total_tokens<=config.planning_ceiling): errors.append("SCIENTIFIC_TOKEN_PROJECTION")
+    return {"passed":not errors,"errors":tuple(errors),"scientific":True}
+
+
 def run_e2(config, e1_run_dir, expectation, cached_backend, run_store, backend_probe=None):
     """Execute the bounded E2 plan using only injected storage and generation."""
     if run_store is None or run_store.run_dir is None: raise E2IntegrityError("RUN_STORE_REQUIRED")
+    runtime=validate_e2_runtime_binding(config,cached_backend,run_store)
+    if not runtime["passed"]: raise E2IntegrityError("E2_RUNTIME_BINDING",",".join(runtime["errors"]))
     before={p:p.read_bytes() for p in Path(e1_run_dir).rglob("*") if p.is_file()}
     all_pairs,e1_manifest,scenario_rows=_load_e1_run(e1_run_dir,expectation)
     pairs=tuple(all_pairs[sid] for sid in expectation.eligible_ids)
@@ -501,7 +529,9 @@ def run_e2(config, e1_run_dir, expectation, cached_backend, run_store, backend_p
         validation_messages.extend((pair.stale.peer_message,pair.current.peer_message,pair.awareness_message,pair.stale.message,pair.current.message))
         validation_calls.extend((pair.awareness_call,pair.stale.call,pair.current.call))
         sid=pair.scenario.scenario_id; rs=relay_by[(sid,"relay-stale-replay")]; rc=relay_by[(sid,"relay-current-replay")]
-        ra=relay_by[(sid,"relay-awareness")]; tf=final_by[(sid,"target-stale-final")]; rf=final_by[(sid,"relay-stale-final")]
+        ra=relay_by[(sid,"relay-awareness")]; rf=final_by[(sid,"relay-stale-final")]
+        tsf=final_by[(sid,"target-stale-final")]; tcf=final_by[(sid,"target-current-final")]
+        rcf=final_by[(sid,"relay-current-final")]
         specs=((pair.stale.peer_message.message_id,pair.stale.message.message_id,"source_stale_seed"),
             (pair.stale.peer_message.message_id,pair.stale.message.message_id,"source_to_target_exposure"),
             (pair.awareness_call.message_id,pair.stale.message.message_id,"target_awareness_sibling"),
@@ -510,14 +540,19 @@ def run_e2(config, e1_run_dir, expectation, cached_backend, run_store, backend_p
             (pair.stale.message.message_id,envelope_stale.message.message_id,"exact_replay"),
             (envelope_stale.message.message_id,rs.message_id,"target_to_relay_exposure"),
             (ra.message_id,rs.message_id,"relay_awareness_sibling"),(rc.message_id,rs.message_id,"relay_matched_sibling"),
-            (rs.message_id,rf.message_id,"relay_stale_adoption"),(tf.message_id,rf.message_id,"final_vote_member"),
-            (tf.message_id,rf.message_id,"tier_b_stale_majority_member"),(tf.message_id,rf.message_id,"tier_c_complete_path"))
+            (rs.message_id,rf.message_id,"relay_stale_adoption"),
+            (pair.stale.message.message_id,tsf.message_id,"final_vote_member"),
+            (pair.current.message.message_id,tcf.message_id,"final_vote_member"),
+            (pair.stale.message.message_id,tsf.message_id,"tier_b_stale_majority_member"),
+            (rs.message_id,rf.message_id,"tier_c_complete_path"),
+            (rc.message_id,rcf.message_id,"tier_c_complete_path"))
         edges.extend(LineageRecord(*x) for x in specs)
     lineage=validate_e2_lineage(validation_messages,edges,replay_provenance,validation_calls,topology,final_votes)
     if not lineage["passed"]: raise E2IntegrityError("E2_LINEAGE",",".join(lineage["errors"]))
     for edge in edges: run_store.append_lineage(edge)
     for vote in final_votes: run_store._append("final_votes.jsonl",vote)
-    rows=[asdict(c) for c in calls if c.condition.startswith("relay-")]
+    core_conditions={"relay-awareness","relay-stale-replay","relay-current-replay"}
+    rows=[asdict(c) for c in calls if c.condition in core_conditions]
     integrity={sid:{"exact_replay":True,"infrastructure_failure":False} for sid in expectation.eligible_ids}
     retransmission=evaluate_e2_retransmission(rows,eligibility,{sid:{"same_parent":True} for sid in expectation.eligible_ids},integrity)
     fscr=evaluate_e2_fscr(final_votes,lineage)

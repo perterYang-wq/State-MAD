@@ -58,7 +58,9 @@ def evaluate_e2_retransmission(rows, eligibility=None, topology=None, integrity=
     candidate_ids=tuple(eligibility.get("candidate_ids", ()))
     e1_ids=tuple(eligibility.get("eligible_ids", ())); by={sid:{} for sid in candidate_ids}
     duplicates=[]
+    allowed={"relay-awareness","relay-stale-replay","relay-current-replay"}
     for row in rows:
+        if row.get("condition") not in allowed: raise ValueError("UNEXPECTED_RELAY_CONDITION:"+str(row.get("condition")))
         key=(row["scenario_id"],row["condition"])
         if row["condition"] in by.setdefault(row["scenario_id"],{}): duplicates.append(key)
         else: by[row["scenario_id"]][row["condition"]]=row

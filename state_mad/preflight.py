@@ -166,6 +166,7 @@ def validate_e2_preflight(config, overlays, replay_pairs, backend_probe,
         if not config.run_id or config.run_id=="dry-run": errors.append("RUN_ID")
         if not config.cache_root: errors.append("CACHE_ROOT")
         if not config.run_store_root: errors.append("RUN_STORE_ROOT")
+        if config.projected_total_tokens<=0: errors.append("SCIENTIFIC_TOKEN_PROJECTION")
         if backend_probe.get("backend")!="language-model": errors.append("SCIENTIFIC_BACKEND")
         for field in ("seed_supported","model_available","tokenizer_available"):
             if not backend_probe.get(field,False): errors.append(field.upper())
