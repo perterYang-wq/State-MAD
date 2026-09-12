@@ -136,15 +136,41 @@ class E1Tests(unittest.TestCase):
         self.assertTrue(report["status_structure_exact_match"])
         self.assertTrue(report["actual_peer_multiset_match"])
         self.assertTrue(report["actual_decision_prompt_multiset_match"])
+        self.assertTrue(report["paired_full_prompt_token_balance_pass"])
+        self.assertTrue(all(report["paired_full_prompt_pair_pass"].values()))
+        self.assertTrue(all(total==0 for total in report["paired_full_prompt_delta_sums"].values()))
         self.assertTrue(report["role_balance_pass"]); self.assertTrue(report["overall_pass"])
         self.assertTrue(all(set(counts.values())=={10} for counts in report["role_counts"].values()))
         self.assertTrue(any(len(set(row["actual_peer_token_counts"].values()))>1
                             for row in report["per_scenario"].values()))
 
-    def test_peer_v2_control_report_detects_each_failure_surface(self):
+    def test_peer_v2_control_report_uses_paired_balance_not_marginal_multisets(self):
+        def paired_counter(text):
+            if not text.startswith("ORDINARY DECISION"):
+                return 10
+            scenario_number=int(text.split("fact=fact-e1-")[1][:2])
+            pattern=(scenario_number-1)%3
+            if "was_current=1|current_now=0" in text:
+                return 100+(0,1,1)[pattern]
+            if "was_current=0|current_now=0" in text:
+                return 100+(0,0,2)[pattern]
+            return 100+(0,0,2)[pattern]
+        report=build_e1_peer_control_report(self.ss.scenarios,paired_counter)
+        self.assertFalse(report["actual_decision_prompt_multiset_match"])
+        self.assertTrue(report["paired_full_prompt_token_balance_pass"])
+        self.assertTrue(report["overall_pass"])
+        self.assertEqual(set(report["paired_full_prompt_deltas"]),{
+            "current_vs_stale","current_vs_static_wrong","stale_vs_static_wrong"})
+        for name,histogram in report["paired_full_prompt_delta_histograms"].items():
+            self.assertTrue(all(histogram.get(delta,0)==histogram.get(-delta,0) for delta in histogram),name)
+            self.assertEqual(report["paired_full_prompt_delta_sums"][name],0)
+            self.assertTrue(report["paired_full_prompt_pair_pass"][name])
+
+    def test_peer_v2_control_report_detects_each_hard_gate_failure(self):
         def asymmetric(text):
             return len(text)+(1 if "was_current=1|current_now=0" in text else 0)
-        self.assertFalse(build_e1_peer_control_report(self.ss.scenarios,asymmetric)["overall_pass"])
+        report=build_e1_peer_control_report(self.ss.scenarios,asymmetric)
+        self.assertFalse(report["status_structure_exact_match"]); self.assertFalse(report["overall_pass"])
         def broken_actual(text):
             return len(text)+(1 if "fact=fact-e1-40|value=ALPHA" in text else 0)
         report=build_e1_peer_control_report(self.ss.scenarios,broken_actual)
@@ -153,7 +179,17 @@ class E1Tests(unittest.TestCase):
             return len(text)+(1 if text.startswith("ORDINARY DECISION") and
                                 "fact-e1-40|value=ALPHA" in text else 0)
         report=build_e1_peer_control_report(self.ss.scenarios,broken_prompt)
-        self.assertFalse(report["actual_decision_prompt_multiset_match"]); self.assertFalse(report["overall_pass"])
+        self.assertFalse(report["actual_decision_prompt_multiset_match"])
+        self.assertFalse(report["paired_full_prompt_token_balance_pass"])
+        self.assertTrue(any(total!=0 for total in report["paired_full_prompt_delta_sums"].values()))
+        self.assertTrue(any(any(histogram.get(delta,0)!=histogram.get(-delta,0)
+                                 for delta in histogram)
+                            for histogram in report["paired_full_prompt_delta_histograms"].values()))
+        self.assertFalse(report["overall_pass"])
+
+        unbalanced=self.ss.scenarios[:-1]
+        report=build_e1_peer_control_report(unbalanced,lambda text: 1)
+        self.assertFalse(report["role_balance_pass"]); self.assertFalse(report["overall_pass"])
 
     def test_preflight_is_e1_specific_and_fail_closed(self):
         probe={"seed_supported":True,"model_available":True,"tokenizer_available":True}
