@@ -83,9 +83,10 @@ def _get(value, name, default=None):
 
 
 def validate_e2_preflight(config, overlays, replay_pairs, backend_probe,
-                          final_vote_spec, branch_plans=()):
+                          final_vote_spec, branch_plans, final_call_plans):
     """Validate the entire E2 plan without touching a tokenizer or backend."""
     errors=[]; overlays=tuple(overlays); replay_pairs=tuple(replay_pairs); branch_plans=tuple(branch_plans)
+    final_call_plans=tuple(final_call_plans)
     checks=((config.scenario_count==9 and len(overlays)==len(replay_pairs)==9,"SCENARIO_COUNT"),
         (config.agents==3,"AGENTS"),(config.communication_hops==2,"COMMUNICATION_HOPS"),
         (config.temperature==0,"TEMPERATURE"),(config.top_p==1,"TOP_P"),
@@ -124,6 +125,22 @@ def validate_e2_preflight(config, overlays, replay_pairs, backend_probe,
         parent=_get(plan,"parent"); siblings=tuple(_get(plan,x) for x in ("awareness","stale","current"))
         if any(x is None or _get(x,"parent_snapshot_hash")!=_get(parent,"snapshot_hash") for x in siblings): errors.append("RELAY_SIBLING_TOPOLOGY")
         if siblings and (_get(siblings[0],"message_ids",()) or set(_get(siblings[1],"message_ids",())) & set(_get(siblings[2],"message_ids",()))): errors.append("AWARENESS_CONTAMINATION")
+        if any(len(_get(x,"message_ids",()))!=1 for x in siblings[1:]): errors.append("RELAY_REPLAY_VISIBILITY")
+        stale_ids=_get(siblings[1],"message_ids",()) if siblings[1] is not None else ()
+        current_ids=_get(siblings[2],"message_ids",()) if siblings[2] is not None else ()
+        if len(stale_ids)!=1 or len(current_ids)!=1 or ":stale:replay" not in stale_ids[0] or ":current:replay" not in current_ids[0]: errors.append("RELAY_REPLAY_ARM_MAPPING")
+    plan_ids=tuple(_get(_get(p,"parent",p),"scenario_id") for p in branch_plans)
+    if len(branch_plans)!=9 or len(set(plan_ids))!=9 or set(plan_ids)!=set(config.eligible_ids): errors.append("BRANCH_PLAN_COUNT")
+    if len(final_call_plans)!=45: errors.append("FINAL_CALL_PLAN_COUNT")
+    expected_conditions={"source-final","target-stale-final","target-current-final","relay-stale-final","relay-current-final"}
+    overlays_by_id={_get(x,"scenario_id"):x for x in overlays}
+    for sid in config.eligible_ids:
+        plans=[p for p in final_call_plans if _get(p,"scenario_id")==sid]
+        if len(plans)!=5 or {_get(p,"condition") for p in plans}!=expected_conditions: errors.append("FINAL_CALL_PLAN_SET"); continue
+        if any(_get(p,"phase")!=_get(overlays_by_id[sid],"final_vote_phase_id") for p in plans): errors.append("FINAL_CALL_PHASE")
+        mapping={_get(p,"condition"):_get(p,"branch_id","") for p in plans}
+        if ("stale" not in mapping["target-stale-final"] or "current" not in mapping["target-current-final"] or
+            "stale" not in mapping["relay-stale-final"] or "current" not in mapping["relay-current-final"]): errors.append("FINAL_BRANCH_MAPPING")
     specs=tuple(final_vote_spec)
     if len(specs)!=18: errors.append("SYSTEM_CASE_COUNT")
     by_scenario={sid:[x for x in specs if _get(x,"scenario_id")==sid] for sid in config.eligible_ids}

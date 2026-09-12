@@ -55,14 +55,19 @@ def evaluate_e1(rows, scenario_ids):
 def evaluate_e2_retransmission(rows, eligibility=None, topology=None, integrity=None):
     """Pure conditional second-hop report; completed invalid answers are votes."""
     rows=tuple(rows); eligibility=eligibility or {}; topology=topology or {}; integrity=integrity or {}
-    candidate_ids=tuple(eligibility.get("candidate_ids", sorted({r["scenario_id"] for r in rows})))
-    e1_ids=tuple(eligibility.get("eligible_ids", candidate_ids)); by={sid:{} for sid in candidate_ids}
-    for row in rows: by.setdefault(row["scenario_id"],{})[row["condition"]]=row
+    candidate_ids=tuple(eligibility.get("candidate_ids", ()))
+    e1_ids=tuple(eligibility.get("eligible_ids", ())); by={sid:{} for sid in candidate_ids}
+    duplicates=[]
+    for row in rows:
+        key=(row["scenario_id"],row["condition"])
+        if row["condition"] in by.setdefault(row["scenario_id"],{}): duplicates.append(key)
+        else: by[row["scenario_id"]][row["condition"]]=row
+    if duplicates: raise ValueError("DUPLICATE_RELAY_ROW:"+repr(tuple(duplicates)))
     aware=[]; completed=[]; included=[]; excluded={}
     for sid in candidate_ids:
         reasons=[]; arms=by.get(sid,{})
         if sid not in e1_ids: reasons.append("NOT_E1_ELIGIBLE")
-        exact=integrity.get(sid,{}).get("exact_replay",arms.get("exact_replay",True))
+        exact=integrity.get(sid,{}).get("exact_replay")
         if not exact: reasons.append("INVALID_EXACT_REPLAY")
         awareness=arms.get("relay-awareness",arms.get("awareness",{}))
         if awareness.get("answer_class")=="CURRENT": aware.append(sid)
@@ -95,9 +100,9 @@ def evaluate_e2_retransmission(rows, eligibility=None, topology=None, integrity=
 def evaluate_e2_fscr(final_votes, lineage_report=None, system_eligibility=None):
     """Evaluate all three synchronized, diagnostic E2 FSCR tiers."""
     lineage_report=lineage_report or {}; system_eligibility=system_eligibility or {}
-    complete=[]; excluded={}; ordinary=[]; exposure=[]; retransmission=[]
-    tier_b=set(lineage_report.get("tier_b_system_case_ids",()))
-    tier_c=set(lineage_report.get("tier_c_system_case_ids",()))
+    ordinary_d=[]; exposure_d=[]; retransmission_d=[]
+    ordinary_x={}; exposure_x={}; retransmission_x={}; ordinary=[]; exposure=[]; retransmission=[]
+    verified=lineage_report.get("system_cases",{})
     for case in final_votes:
         cid=case["system_case_id"]; votes=tuple(case.get("votes",()))
         reasons=[]
@@ -107,16 +112,23 @@ def evaluate_e2_fscr(final_votes, lineage_report=None, system_eligibility=None):
         if any(v.get("condition")=="source-stale-seed" or v.get("pre_update",False) for v in votes): reasons.append("PREUPDATE_SEED_VOTE")
         if case.get("communication_edges"): reasons.append("FINAL_READOUT_COMMUNICATION")
         if system_eligibility and not system_eligibility.get(cid,True): reasons.append("SYSTEM_INELIGIBLE")
-        if reasons: excluded[cid]=tuple(dict.fromkeys(reasons)); continue
-        complete.append(cid); stale={v.get("author") for v in votes if v.get("answer_class")=="STALE"}
+        if reasons:
+            ordinary_x[cid]=tuple(dict.fromkeys(reasons)); exposure_x[cid]=ordinary_x[cid]; retransmission_x[cid]=ordinary_x[cid]
+            continue
+        ordinary_d.append(cid); stale={v.get("author") for v in votes if v.get("answer_class")=="STALE"}
         if len(stale)>=2:
             ordinary.append(cid)
-            causal=set(case.get("causal_adopter_roles",()))
-            if cid in tier_b or bool(stale & causal): exposure.append(cid)
-            path=case.get("tier_c_complete_path",False) or cid in tier_c
-            if path: retransmission.append(cid)
-    n=len(complete)
-    def metric(ids): return {"numerator_ids":tuple(ids),"numerator_n":len(ids),"denominator_ids":tuple(complete),"denominator_n":n,"rate":len(ids)/n if n else None}
-    return {"ordinary_fscr":metric(ordinary),"exposure_induced_fscr":metric(exposure),
-        "retransmission_supported_fscr":metric(retransmission),"excluded":excluded,
+        evidence=verified.get(cid,{})
+        if evidence.get("tier_b_evaluable"):
+            exposure_d.append(cid)
+            if len(stale)>=2 and evidence.get("tier_b_predicate"): exposure.append(cid)
+        else: exposure_x[cid]=tuple(evidence.get("errors",("TIER_B_NOT_EVALUABLE",)))
+        if evidence.get("tier_c_evaluable"):
+            retransmission_d.append(cid)
+            if len(stale)>=2 and evidence.get("tier_c_predicate"): retransmission.append(cid)
+        else: retransmission_x[cid]=tuple(evidence.get("errors",("TIER_C_NOT_EVALUABLE",)))
+    def metric(ids,denom,excluded): return {"numerator_ids":tuple(ids),"numerator_n":len(ids),"denominator_ids":tuple(denom),"denominator_n":len(denom),"rate":len(ids)/len(denom) if denom else None,"excluded":excluded}
+    return {"ordinary_fscr":metric(ordinary,ordinary_d,ordinary_x),
+        "exposure_induced_fscr":metric(exposure,exposure_d,exposure_x),
+        "retransmission_supported_fscr":metric(retransmission,retransmission_d,retransmission_x),
         "interpretation":"conditional/diagnostic","independent_retransmission_claim":False}
