@@ -10,6 +10,12 @@ class E0ScenarioSpec:
     value_pool: tuple[str, ...] = DEFAULT_VALUES; seed: int = 20260907
 
 @dataclass(frozen=True)
+class E1ScenarioSpec:
+    """The frozen, deliberately non-generic 40-item E1 pilot specification."""
+    count: int = 40; template_id: str = "direct_state_categorical_v1"
+    value_pool: tuple[str, ...] = DEFAULT_VALUES; seed: int = 20260907
+
+@dataclass(frozen=True)
 class ScenarioSet:
     scenarios: tuple[ScenarioRecord, ...]; scenario_set_hash: str
 
@@ -27,6 +33,24 @@ def compile_e0_scenarios(spec: E0ScenarioSpec = E0ScenarioSpec()) -> ScenarioSet
         sid=f"e0-{i+1:02d}"; fact=f"fact-{i+1:02d}"
         out.append(ScenarioRecord(sid,"e0",spec.seed,spec.template_id,i%12,fact,
             fact+":v1",fact+":v2",roles[0],roles[1],roles[2],AnswerPool(roles[1],roles[0],roles[2],positions),
+            ("source","target"),("old_created","authoritative_update","target_current","exposure","decision"),
+            (fact+":v2",),sid+":pre",sid+":decision",sid+":final"))
+    scenarios=tuple(out)
+    return ScenarioSet(scenarios,digest(scenarios))
+
+def compile_e1_scenarios(spec: E1ScenarioSpec = E1ScenarioSpec()) -> ScenarioSet:
+    if spec.count != 40: raise ValueError("E1 requires exactly 40 scenarios")
+    if spec.template_id != "direct_state_categorical_v1": raise ValueError("invalid E1 template")
+    if len(spec.value_pool) < 3 or len(set(spec.value_pool)) != len(spec.value_pool):
+        raise ValueError("at least three distinct values required")
+    out=[]; n=len(spec.value_pool)
+    for i in range(40):
+        roles=tuple(spec.value_pool[(i+j)%n] for j in range(3))
+        shift=i%3; positions=tuple(roles[(j+shift)%3] for j in range(3))
+        sid=f"e1-{i+1:02d}"; fact=f"fact-e1-{i+1:02d}"
+        out.append(ScenarioRecord(sid,"pilot",spec.seed,spec.template_id,i%12,fact,
+            fact+":v1",fact+":v2",roles[0],roles[1],roles[2],
+            AnswerPool(roles[1],roles[0],roles[2],positions),
             ("source","target"),("old_created","authoritative_update","target_current","exposure","decision"),
             (fact+":v2",),sid+":pre",sid+":decision",sid+":final"))
     scenarios=tuple(out)
