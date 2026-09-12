@@ -1,4 +1,5 @@
 import json
+import inspect
 import tempfile
 import unittest
 from dataclasses import replace
@@ -6,12 +7,15 @@ from pathlib import Path
 
 from state_mad.backend import CachedBackend
 from state_mad.cache import MessageCache
-from state_mad.e1 import build_e1_peer_messages, run_e1, run_e1_dry
+from state_mad.e1 import (build_e1_peer_control_report,
+                          build_e1_peer_messages, run_e1, run_e1_dry)
+import state_mad.e0 as e0_module
 from state_mad.grading import CLASSES, grade_output
 from state_mad.lineage import validate_e1_lineage
 from state_mad.metrics import E1_ARMS, evaluate_e1
 from state_mad.preflight import E1RunConfig, validate_e1_preflight
-from state_mad.prompts import render_awareness_probe, render_decision, render_peer_message
+from state_mad.prompts import (render_awareness_probe, render_decision,
+                               render_e1_peer_message, render_peer_message)
 from state_mad.run_store import RunStore
 from state_mad.scenarios import E0ScenarioSpec, E1ScenarioSpec, compile_e0_scenarios, compile_e1_scenarios
 from state_mad.schema import (BackendOutput, EffectiveGenerationIdentity,
@@ -85,9 +89,17 @@ class E1Tests(unittest.TestCase):
 
     def test_frozen_prompt_and_grader_contracts(self):
         scenario=self.ss.scenarios[0]; snapshot=make_pre_exposure_snapshot(scenario)
-        self.assertEqual(render_awareness_probe(scenario,snapshot).template_id,"awareness-v3")
-        self.assertEqual(render_decision(scenario,snapshot,"no-peer").template_id,"decision-v2")
-        self.assertEqual(render_peer_message(scenario,scenario.v_old,"x").template_id,"peer-v1")
+        awareness=render_awareness_probe(scenario,snapshot)
+        decision=render_decision(scenario,snapshot,"no-peer")
+        peer=render_peer_message(scenario,scenario.v_old,"x")
+        self.assertEqual((awareness.template_id,awareness.template_hash),("awareness-v3",digest("awareness-v3")))
+        self.assertEqual((decision.template_id,decision.template_hash),("decision-v2",digest("decision-v2")))
+        self.assertEqual(peer.text,f"PEER|fact={scenario.fact_id}|value={scenario.v_old}|confidence=high|history=x")
+        self.assertEqual((peer.template_id,peer.template_hash),("peer-v1",digest("peer-v1")))
+        self.assertEqual(awareness.prompt_hash,"sha256:1fa304a9a9eb2efb48a9047ecf6fc32feaaa0fdd917a5744311574e2772f3116")
+        self.assertEqual(decision.prompt_hash,"sha256:c243875a36a89548ca9385a56b0881b89c31051a3c74897ef8d8da578c633aae")
+        self.assertEqual(peer.prompt_hash,"sha256:47a5cbc8233f82e2a7513f1b836f1bc64efa2ea3fc886aadcad5599414a53a9c")
+        self.assertIn("render_peer_message(s,value,history)",inspect.getsource(e0_module.run_e0))
         self.assertEqual(CLASSES,("CURRENT","STALE","STATIC_WRONG","OTHER/INVALID"))
         self.assertEqual(grade_output("ANSWER="+scenario.v_wrong,scenario.answer_pool).answer_class,"STATIC_WRONG")
 
@@ -98,13 +110,50 @@ class E1Tests(unittest.TestCase):
         self.assertIn(f"|value={scenario.v_old}|",peers["stale-peer"].raw_content)
         self.assertEqual(peers["stale-peer"].version_id,scenario.version_old_id)
         self.assertEqual((peers["stale-peer"].generation_validity,peers["stale-peer"].decision_validity),("current","stale"))
-        self.assertIn("correct_when_created_then_superseded",peers["stale-peer"].raw_content)
+        self.assertIn("was_current=1|current_now=0",peers["stale-peer"].raw_content)
         self.assertEqual((peers["static-wrong"].generation_validity,peers["static-wrong"].decision_validity),("never_current","static_wrong"))
         self.assertEqual(peers["static-wrong"].version_id,scenario.fact_id+":v_wrong")
         self.assertIn(f"|value={scenario.v_wrong}|",peers["static-wrong"].raw_content)
-        self.assertIn("never_current",peers["static-wrong"].raw_content)
-        self.assertTrue(all(x["template_id"]=="peer-v1" for x in check["renderings"].values()))
+        self.assertIn("was_current=0|current_now=0",peers["static-wrong"].raw_content)
+        self.assertIn("was_current=1|current_now=1",peers["current-peer"].raw_content)
+        self.assertTrue(all(x["template_id"]=="peer-v2" for x in check["renderings"].values()))
         self.assertTrue(all(isinstance(x["token_count"],int) for x in check["renderings"].values()))
+        fields=[message.raw_content.split("|") for message in peers.values()]
+        self.assertTrue(all([part.split("=")[0] for part in item]==
+                            ["PEER","fact","value","confidence","was_current","current_now"] for item in fields))
+        self.assertTrue(all(term not in message.raw_content for message in peers.values()
+                            for term in ("current_after_update","correct_when_created_then_superseded","never_current")))
+
+    def test_peer_v2_control_report_exact_and_counterbalanced(self):
+        # A deterministic token fixture gives symbolic values unequal token
+        # lengths while treating the matched binary status fields symmetrically.
+        weights={"ALPHA":1,"BRAVO":2,"CHARLIE":3,"DELTA":4}
+        counter=lambda text: (text.count("|")+text.count("\n")+
+                              (0 if text.startswith("ORDINARY DECISION") else
+                               sum(text.count(v)*n for v,n in weights.items())))
+        report=build_e1_peer_control_report(self.ss.scenarios,counter,"synthetic-token-counter")
+        self.assertEqual(report["template_id"],"peer-v2")
+        self.assertTrue(report["status_structure_exact_match"])
+        self.assertTrue(report["actual_peer_multiset_match"])
+        self.assertTrue(report["actual_decision_prompt_multiset_match"])
+        self.assertTrue(report["role_balance_pass"]); self.assertTrue(report["overall_pass"])
+        self.assertTrue(all(set(counts.values())=={10} for counts in report["role_counts"].values()))
+        self.assertTrue(any(len(set(row["actual_peer_token_counts"].values()))>1
+                            for row in report["per_scenario"].values()))
+
+    def test_peer_v2_control_report_detects_each_failure_surface(self):
+        def asymmetric(text):
+            return len(text)+(1 if "was_current=1|current_now=0" in text else 0)
+        self.assertFalse(build_e1_peer_control_report(self.ss.scenarios,asymmetric)["overall_pass"])
+        def broken_actual(text):
+            return len(text)+(1 if "fact=fact-e1-40|value=ALPHA" in text else 0)
+        report=build_e1_peer_control_report(self.ss.scenarios,broken_actual)
+        self.assertFalse(report["actual_peer_multiset_match"]); self.assertFalse(report["overall_pass"])
+        def broken_prompt(text):
+            return len(text)+(1 if text.startswith("ORDINARY DECISION") and
+                                "fact-e1-40|value=ALPHA" in text else 0)
+        report=build_e1_peer_control_report(self.ss.scenarios,broken_prompt)
+        self.assertFalse(report["actual_decision_prompt_multiset_match"]); self.assertFalse(report["overall_pass"])
 
     def test_preflight_is_e1_specific_and_fail_closed(self):
         probe={"seed_supported":True,"model_available":True,"tokenizer_available":True}
@@ -163,7 +212,7 @@ class E1Tests(unittest.TestCase):
             cached=CachedBackend(backend,MessageCache(root/"cache"/"scientific"))
             store=RunStore(root/"runs"/"scientific").create(config.run_id)
             def late_mismatch(text):
-                return 6 if "fact-e1-40" in text and "history=never_current" in text else 5
+                return 6 if "fact-e1-40" in text and "was_current=0|current_now=0" in text else 5
             probe={"seed_supported":True,"model_available":True,"tokenizer_available":True,"backend":"language-model"}
             with self.assertRaisesRegex(RuntimeError,"NEEDS HUMAN DECISION"):
                 run_e1(config,cached,store,probe,late_mismatch)

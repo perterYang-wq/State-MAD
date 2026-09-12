@@ -14,7 +14,7 @@ from .lineage import validate_e1_lineage
 from .manifest import build_manifest, finalize_manifest
 from .metrics import evaluate_e1
 from .preflight import E1RunConfig, validate_e1_preflight
-from .prompts import render_awareness_probe, render_decision, render_peer_message
+from .prompts import render_awareness_probe, render_decision, render_e1_peer_message
 from .run_store import RunStore
 from .scenarios import E1ScenarioSpec, build_balance_report, compile_e1_scenarios
 from .schema import (CallRecord, EffectiveGenerationIdentity, GenerationRequest,
@@ -41,13 +41,13 @@ def prepare_e1_run(config: E1RunConfig, backend):
 
 def build_e1_peer_messages(scenario, token_counter=None):
     definitions = (
-        ("current-peer", scenario.v_new, scenario.version_new_id, "current", "current", "current_after_update"),
-        ("stale-peer", scenario.v_old, scenario.version_old_id, "current", "stale", "correct_when_created_then_superseded"),
-        ("static-wrong", scenario.v_wrong, f"{scenario.fact_id}:v_wrong", "never_current", "static_wrong", "never_current"),
+        ("current-peer", scenario.v_new, scenario.version_new_id, "current", "current", 1, 1),
+        ("stale-peer", scenario.v_old, scenario.version_old_id, "current", "stale", 1, 0),
+        ("static-wrong", scenario.v_wrong, f"{scenario.fact_id}:v_wrong", "never_current", "static_wrong", 0, 0),
     )
     messages={}; controls={}
-    for condition,value,version,generation_validity,decision_validity,history in definitions:
-        rendered=render_peer_message(scenario,value,history)
+    for condition,value,version,generation_validity,decision_validity,was_current,current_now in definitions:
+        rendered=render_e1_peer_message(scenario,value,was_current,current_now)
         mid=f"{scenario.scenario_id}:{condition}:peer"
         messages[condition]=MessageRecord(mid,digest(rendered.text),rendered.text,"source","target",(),
             scenario.fact_id,version,generation_validity,decision_validity,"exposure","deterministic")
@@ -57,6 +57,54 @@ def build_e1_peer_messages(scenario, token_counter=None):
     return messages,{"renderings":controls,"token_counts_exact_match":None if token_counter is None else len(set(counts))==1}
 
 
+def build_e1_peer_control_report(scenarios, token_counter, counting_source=None):
+    """Check E1's structural and counterbalanced controls without generation."""
+    conditions=("current-peer","stale-peer","static-wrong")
+    flags={"current-peer":(1,1),"stale-peer":(1,0),"static-wrong":(0,0)}
+    actual={condition:[] for condition in conditions}
+    normalized={condition:[] for condition in conditions}
+    decisions={condition:[] for condition in conditions}
+    per_scenario={}
+    for scenario in scenarios:
+        peers,_=build_e1_peer_messages(scenario)
+        parent=make_pre_exposure_snapshot(scenario)
+        row={"actual_peer_token_counts":{},"status_normalized_token_counts":{},
+             "full_decision_prompt_token_counts":{}}
+        for condition in conditions:
+            actual_count=token_counter(peers[condition].raw_content)
+            normalized_text=render_e1_peer_message(scenario,scenario.v_new,*flags[condition]).text
+            normalized_count=token_counter(normalized_text)
+            branch=fork_snapshot(parent,condition,(peers[condition].message_id,))
+            decision=render_decision(scenario,branch,condition,(peers[condition],))
+            decision_count=token_counter(decision.text)
+            row["actual_peer_token_counts"][condition]=actual_count
+            row["status_normalized_token_counts"][condition]=normalized_count
+            row["full_decision_prompt_token_counts"][condition]=decision_count
+            actual[condition].append(actual_count); normalized[condition].append(normalized_count)
+            decisions[condition].append(decision_count)
+        per_scenario[scenario.scenario_id]=row
+    sorted_actual={condition:sorted(actual[condition]) for condition in conditions}
+    sorted_normalized={condition:sorted(normalized[condition]) for condition in conditions}
+    sorted_decisions={condition:sorted(decisions[condition]) for condition in conditions}
+    status_match=all(len(set(row["status_normalized_token_counts"].values()))==1
+                     for row in per_scenario.values())
+    actual_match=len({tuple(counts) for counts in sorted_actual.values()})==1
+    decision_match=len({tuple(counts) for counts in sorted_decisions.values()})==1
+    values=sorted({value for scenario in scenarios
+                   for value in (scenario.v_old,scenario.v_new,scenario.v_wrong)})
+    role_counts={value:{role:sum(getattr(scenario,role)==value for scenario in scenarios)
+                        for role in ("v_old","v_new","v_wrong")} for value in values}
+    expected=len(scenarios)//len(values) if values and len(scenarios)%len(values)==0 else None
+    role_balance=len(scenarios)==40 and len(values)==4 and expected==10 and all(
+        count==expected for counts in role_counts.values() for count in counts.values())
+    return {"template_id":"peer-v2","counting_source":counting_source,
+            "per_scenario":per_scenario,"condition_sorted_actual_peer_token_counts":sorted_actual,
+            "condition_sorted_status_normalized_token_counts":sorted_normalized,
+            "condition_sorted_full_decision_prompt_token_counts":sorted_decisions,
+            "status_structure_exact_match":status_match,"actual_peer_multiset_match":actual_match,
+            "actual_decision_prompt_multiset_match":decision_match,"role_counts":role_counts,
+            "role_balance_pass":role_balance,
+            "overall_pass":status_match and actual_match and decision_match and role_balance}
 def run_e1(config: E1RunConfig, cached_backend, run_store, backend_probe=None, peer_token_counter=None):
     """Run exactly 40 scenarios × five logical Target calls."""
     if run_store is None: raise ValueError("E1 requires a run store for canonical artifacts")
@@ -81,10 +129,13 @@ def run_e1(config: E1RunConfig, cached_backend, run_store, backend_probe=None, p
     for scenario in scenarios.scenarios:
         peers,control=build_e1_peer_messages(scenario,peer_token_counter)
         peer_material[scenario.scenario_id]=(peers,control)
-    if config.mode=="scientific" and any(
-            not control["token_counts_exact_match"] for _,control in peer_material.values()):
-        # This is a whole-scenario-set preflight: no generation may have occurred.
-        raise RuntimeError("NEEDS HUMAN DECISION: frozen peer-v1 token counts do not match")
+    peer_control_report=None
+    if peer_token_counter is not None:
+        peer_control_report=build_e1_peer_control_report(
+            scenarios.scenarios,peer_token_counter,probe.get("tokenizer") or probe.get("backend"))
+    if config.mode=="scientific" and not peer_control_report["overall_pass"]:
+        # Whole-set preflight: this executes before the first backend call.
+        raise RuntimeError("NEEDS HUMAN DECISION: E1 peer-v2 controls do not match")
     calls=[]; messages=[]; edges=[]; rows=[]; probe_ids=[]; decision_ids={}; provenance=[]; peer_controls={}; current_origins=set(); topology={}
     for s in scenarios.scenarios:
         parent=make_pre_exposure_snapshot(s); frozen_parent=parent.snapshot_hash
@@ -138,6 +189,7 @@ def run_e1(config: E1RunConfig, cached_backend, run_store, backend_probe=None, p
         "scenario_reports":lineage_reports}
     report=evaluate_e1(rows,[s.scenario_id for s in scenarios.scenarios])
     report["peer_controls"]=peer_controls
+    report["peer_control_report"]=peer_control_report
     report["branch_topology"]=topology
     report["cache_summary"]={"hits":sum(c.cache_status=="hit" for c in calls),
         "misses":sum(c.cache_status=="miss" for c in calls)}
