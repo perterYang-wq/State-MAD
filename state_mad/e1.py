@@ -3,6 +3,7 @@
 This module intentionally implements only awareness plus the four frozen E1
 siblings.  It contains no relay, retransmission, correction, or mitigation.
 """
+from collections import Counter
 from dataclasses import asdict
 from datetime import datetime, timezone
 from pathlib import Path
@@ -90,6 +91,20 @@ def build_e1_peer_control_report(scenarios, token_counter, counting_source=None)
                      for row in per_scenario.values())
     actual_match=len({tuple(counts) for counts in sorted_actual.values()})==1
     decision_match=len({tuple(counts) for counts in sorted_decisions.values()})==1
+    pair_conditions={
+        "current_vs_stale":("current-peer","stale-peer"),
+        "current_vs_static_wrong":("current-peer","static-wrong"),
+        "stale_vs_static_wrong":("stale-peer","static-wrong"),
+    }
+    paired_deltas={name:[left-right for left,right in zip(decisions[a],decisions[b])]
+                   for name,(a,b) in pair_conditions.items()}
+    paired_histograms={name:dict(sorted(Counter(deltas).items()))
+                       for name,deltas in paired_deltas.items()}
+    paired_sums={name:sum(deltas) for name,deltas in paired_deltas.items()}
+    paired_pass={name:(paired_sums[name]==0 and all(
+        histogram.get(delta,0)==histogram.get(-delta,0) for delta in histogram))
+        for name,histogram in paired_histograms.items()}
+    paired_balance=all(paired_pass.values())
     values=sorted({value for scenario in scenarios
                    for value in (scenario.v_old,scenario.v_new,scenario.v_wrong)})
     role_counts={value:{role:sum(getattr(scenario,role)==value for scenario in scenarios)
@@ -102,9 +117,14 @@ def build_e1_peer_control_report(scenarios, token_counter, counting_source=None)
             "condition_sorted_status_normalized_token_counts":sorted_normalized,
             "condition_sorted_full_decision_prompt_token_counts":sorted_decisions,
             "status_structure_exact_match":status_match,"actual_peer_multiset_match":actual_match,
-            "actual_decision_prompt_multiset_match":decision_match,"role_counts":role_counts,
+            "actual_decision_prompt_multiset_match":decision_match,
+            "paired_full_prompt_deltas":paired_deltas,
+            "paired_full_prompt_delta_histograms":paired_histograms,
+            "paired_full_prompt_delta_sums":paired_sums,
+            "paired_full_prompt_pair_pass":paired_pass,
+            "paired_full_prompt_token_balance_pass":paired_balance,"role_counts":role_counts,
             "role_balance_pass":role_balance,
-            "overall_pass":status_match and actual_match and decision_match and role_balance}
+            "overall_pass":status_match and actual_match and paired_balance and role_balance}
 def run_e1(config: E1RunConfig, cached_backend, run_store, backend_probe=None, peer_token_counter=None):
     """Run exactly 40 scenarios × five logical Target calls."""
     if run_store is None: raise ValueError("E1 requires a run store for canonical artifacts")
