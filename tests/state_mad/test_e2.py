@@ -10,7 +10,7 @@ from state_mad.e2 import (E1RunExpectation, E2IntegrityError, E2_ELIGIBLE_IDS,
     build_final_readout_request, build_relay_awareness_request,
     build_relay_decision_request, make_e2_replay_envelope, plan_final_readout,
     plan_relay_branches, resolve_e1_replay_pair, resolve_e1_replay_pairs, run_e2,
-    validate_e2_runtime_binding, _e2_call)
+    validate_e2_runtime_binding, reconstruct_e1_target_branch_snapshot, _e2_call)
 from state_mad.lineage import validate_e2_lineage
 from state_mad.metrics import evaluate_e2_fscr, evaluate_e2_retransmission
 from state_mad.backend import CachedBackend, FakeBackend
@@ -45,10 +45,14 @@ def e1_dir(tmp_path):
     messages=[]; provenance=[]
     root=tmp_path/"e1"; (root/"messages").mkdir(parents=True)
     for scenario in scenarios_all:
-        calls.extend((call(scenario,"awareness",scenario.v_new,scenario.scenario_id+":awareness-output"),
-            call(scenario,"stale-peer",scenario.v_old if scenario.scenario_id in E2_ELIGIBLE_IDS else scenario.v_new,
-                 scenario.scenario_id+":stale-output",parent=(scenario.scenario_id+":stale-peer:peer",)),
-            call(scenario,"current-peer",scenario.v_new,scenario.scenario_id+":current-output",parent=(scenario.scenario_id+":current-peer:peer",))))
+        parent=make_pre_exposure_snapshot(scenario)
+        awareness_branch=fork_snapshot(parent,"awareness")
+        stale_branch=fork_snapshot(parent,"stale-peer",(scenario.scenario_id+":stale-peer:peer",))
+        current_branch=fork_snapshot(parent,"current-peer",(scenario.scenario_id+":current-peer:peer",))
+        calls.extend((replace(call(scenario,"awareness",scenario.v_new,scenario.scenario_id+":awareness-output"),snapshot_hash=awareness_branch.snapshot_hash),
+            replace(call(scenario,"stale-peer",scenario.v_old if scenario.scenario_id in E2_ELIGIBLE_IDS else scenario.v_new,
+                 scenario.scenario_id+":stale-output",parent=(scenario.scenario_id+":stale-peer:peer",)),snapshot_hash=stale_branch.snapshot_hash),
+            replace(call(scenario,"current-peer",scenario.v_new,scenario.scenario_id+":current-output",parent=(scenario.scenario_id+":current-peer:peer",)),snapshot_hash=current_branch.snapshot_hash)))
         for condition,value,validity in (("stale-peer",scenario.v_old,"stale"),("current-peer",scenario.v_new,"current")):
             raw=render_e1_peer_message(scenario,value,1,0 if condition=="stale-peer" else 1).text
             peer=MessageRecord(f"{scenario.scenario_id}:{condition}:peer",digest(raw),raw,"source","target",(),scenario.fact_id,
@@ -63,8 +67,10 @@ def e1_dir(tmp_path):
             "origin_call_id":c.call_id,"origin_run_id":c.run_id,"origin_resolution":"current_run","cache_status":"miss"})
     scenarios=[asdict(x) for x in scenarios_all]; call_rows=[asdict(c) for c in calls]
     report={"confirmed_treatment_only_stale_ids":list(E2_ELIGIBLE_IDS),"branch_topology":{x.scenario_id:{
-        "parent_snapshot_hash":"e1-parent-"+x.scenario_id,"branches":{name:{"snapshot_hash":"snapshot-"+name,
-        "parent_snapshot_hash":"e1-parent-"+x.scenario_id} for name in ("awareness","stale-peer","current-peer")}} for x in scenarios_all}}
+        "parent_snapshot_hash":make_pre_exposure_snapshot(x).snapshot_hash,"branches":{
+        "awareness":{"snapshot_hash":fork_snapshot(make_pre_exposure_snapshot(x),"awareness").snapshot_hash,"parent_snapshot_hash":make_pre_exposure_snapshot(x).snapshot_hash},
+        "stale-peer":{"snapshot_hash":fork_snapshot(make_pre_exposure_snapshot(x),"stale-peer",(x.scenario_id+":stale-peer:peer",)).snapshot_hash,"parent_snapshot_hash":make_pre_exposure_snapshot(x).snapshot_hash},
+        "current-peer":{"snapshot_hash":fork_snapshot(make_pre_exposure_snapshot(x),"current-peer",(x.scenario_id+":current-peer:peer",)).snapshot_hash,"parent_snapshot_hash":make_pre_exposure_snapshot(x).snapshot_hash}}} for x in scenarios_all}}
     for name,value in (("scenarios.json",scenarios),("cache_provenance.json",provenance),("report.json",report)):
         (root/name).write_text(json.dumps(value))
     (root/"calls.jsonl").write_text("".join(json.dumps(x)+"\n" for x in call_rows))
@@ -158,6 +164,16 @@ def test_exact_historical_peer_v2_authentication(e1_dir,field,value):
     with pytest.raises(E2IntegrityError,match="INVALID_E1_EXPOSURE"): resolve(e1_dir)
 
 
+def test_selected_e1_tokenizer_revision_must_be_consistent(e1_dir):
+    root,_=e1_dir; calls=[json.loads(line) for line in (root/"calls.jsonl").read_text().splitlines()]
+    next(row for row in calls if row["scenario_id"]=="e1-04" and row["condition"]=="stale-peer")["tokenizer_revision"]="different"
+    (root/"calls.jsonl").write_text("".join(json.dumps(row)+"\n" for row in calls))
+    manifest=json.loads((root/"manifest.json").read_text()); manifest["artifact_hashes"]["calls"]=digest(calls)
+    pre={k:v for k,v in manifest.items() if k not in {"ended_at","usage","cache_stats","manifest_hash"}}
+    manifest["manifest_hash"]=digest(pre); (root/"manifest.json").write_text(json.dumps(manifest))
+    with pytest.raises(E2IntegrityError,match="CALL_CONFIG_MISMATCH"): resolve(e1_dir)
+
+
 def test_overlay_relay_siblings_exact_insertion_and_parent_immutability(e1_dir):
     pair=resolve(e1_dir); overlay=build_e2_overlay(pair.scenario,pair); frozen=digest(overlay)
     assert overlay.overlay_schema=="e2-overlay-v1" and overlay.relay_current_version_id==pair.scenario.version_new_id
@@ -176,6 +192,31 @@ def test_overlay_relay_siblings_exact_insertion_and_parent_immutability(e1_dir):
     assert pair.stale.call.raw_output in stale_prompt.text
     # Metadata does not enter effective generation identity.
     assert stale_request.identity==replace(stale_request,condition="metadata-only").identity
+
+
+@pytest.mark.parametrize("arm",["stale","current"])
+def test_reconstructed_e1_target_branch_is_frozen_snapshot(e1_dir,arm):
+    pair=resolve(e1_dir); selected=pair.stale if arm=="stale" else pair.current
+    snapshot=reconstruct_e1_target_branch_snapshot(pair,arm)
+    assert snapshot.snapshot_hash==selected.call.snapshot_hash
+    assert snapshot.parent_snapshot_hash==pair.parent_snapshot_hash
+    assert snapshot.visible_message_ids==(selected.peer_message.message_id,)
+    overlay=build_e2_overlay(pair.scenario,pair); branches=plan_relay_branches(pair.scenario,overlay,
+        make_e2_replay_envelope(pair,"stale",overlay,"e2"),make_e2_replay_envelope(pair,"current",overlay,"e2"))
+    final=plan_final_readout(pair.scenario,overlay,make_pre_exposure_snapshot(pair.scenario),
+        reconstruct_e1_target_branch_snapshot(pair,"stale"),reconstruct_e1_target_branch_snapshot(pair,"current"),
+        branches["stale"],branches["current"])
+    assert final[f"target-{arm}-final"].parent_snapshot_hash==snapshot.snapshot_hash
+
+
+def test_reconstructed_e1_target_branch_rejects_identity_tampering(e1_dir):
+    pair=resolve(e1_dir)
+    with pytest.raises(E2IntegrityError,match="E1_BRANCH_SNAPSHOT_HASH"):
+        reconstruct_e1_target_branch_snapshot(replace(pair,stale=replace(pair.stale,call=replace(pair.stale.call,snapshot_hash="bad"))),"stale")
+    with pytest.raises(E2IntegrityError,match="E1_BRANCH_PARENT_HASH"):
+        reconstruct_e1_target_branch_snapshot(replace(pair,parent_snapshot_hash="bad"),"stale")
+    with pytest.raises(E2IntegrityError,match="E1_BRANCH_PEER_ID"):
+        reconstruct_e1_target_branch_snapshot(replace(pair,stale=replace(pair.stale,peer_message=replace(pair.stale.peer_message,message_id="wrong"))),"stale")
 
 
 @pytest.mark.parametrize("arm,decision_validity",[("stale","stale"),("current","current")])
@@ -279,31 +320,37 @@ def test_scientific_runtime_binding_uses_actual_objects(tmp_path):
     class ScientificTrap:
         scientific_backend=True
         def generate(self,request): raise AssertionError("binding test must not generate")
-    good=validate_e2_runtime_binding(config,CachedBackend(ScientificTrap(),MessageCache(tmp_path/"cache"/"scientific")),store_at())
+    good=validate_e2_runtime_binding(config,CachedBackend(ScientificTrap(),MessageCache(tmp_path/"cache")),store_at())
     assert good["passed"]
     fake_store=RunStore(tmp_path/"fake-runs"/"scientific").create("scientific-e2")
     fake_config=replace(config,run_store_root=str(tmp_path/"fake-runs"))
-    bad=validate_e2_runtime_binding(fake_config,CachedBackend(FakeBackend(),MessageCache(tmp_path/"cache"/"scientific")),fake_store)
+    bad=validate_e2_runtime_binding(fake_config,CachedBackend(FakeBackend(),MessageCache(tmp_path/"cache")),fake_store)
     assert "ACTUAL_SCIENTIFIC_BACKEND" in bad["errors"]
     plain_store=RunStore(tmp_path/"plain-runs"/"scientific").create("scientific-e2")
     plain_config=replace(config,run_store_root=str(tmp_path/"plain-runs"))
     assert "ACTUAL_SCIENTIFIC_BACKEND" in validate_e2_runtime_binding(plain_config,
-        CachedBackend(object(),MessageCache(tmp_path/"cache"/"scientific")),plain_store)["errors"]
+        CachedBackend(object(),MessageCache(tmp_path/"cache")),plain_store)["errors"]
     wrong_cache_store=RunStore(tmp_path/"wc-runs"/"scientific").create("scientific-e2")
     wrong_cache_config=replace(config,run_store_root=str(tmp_path/"wc-runs"))
     assert "ACTUAL_CACHE_ROOT" in validate_e2_runtime_binding(wrong_cache_config,
         CachedBackend(ScientificTrap(),MessageCache(tmp_path/"wrong-cache")),wrong_cache_store)["errors"]
     wrong_run=RunStore(tmp_path/"wrong-runs"/"scientific").create("scientific-e2")
     assert "ACTUAL_RUN_STORE" in validate_e2_runtime_binding(config,
-        CachedBackend(ScientificTrap(),MessageCache(tmp_path/"cache"/"scientific")),wrong_run)["errors"]
+        CachedBackend(ScientificTrap(),MessageCache(tmp_path/"cache")),wrong_run)["errors"]
     token_store=RunStore(tmp_path/"token-runs"/"scientific").create("scientific-e2")
     token_config=replace(config,run_store_root=str(tmp_path/"token-runs"),projected_total_tokens=0)
     assert "SCIENTIFIC_TOKEN_PROJECTION" in validate_e2_runtime_binding(token_config,
-        CachedBackend(ScientificTrap(),MessageCache(tmp_path/"cache"/"scientific")),token_store)["errors"]
+        CachedBackend(ScientificTrap(),MessageCache(tmp_path/"cache")),token_store)["errors"]
     over_store=RunStore(tmp_path/"over-runs"/"scientific").create("scientific-e2")
     over_config=replace(config,run_store_root=str(tmp_path/"over-runs"),projected_total_tokens=800001)
     assert "SCIENTIFIC_TOKEN_PROJECTION" in validate_e2_runtime_binding(over_config,
-        CachedBackend(ScientificTrap(),MessageCache(tmp_path/"cache"/"scientific")),over_store)["errors"]
+        CachedBackend(ScientificTrap(),MessageCache(tmp_path/"cache")),over_store)["errors"]
+    for actual in (tmp_path,tmp_path/"cache"/"scientific"):
+        root=tmp_path/("parent-runs" if actual==tmp_path else "child-runs")
+        candidate=RunStore(root/"scientific").create("scientific-e2")
+        candidate_config=replace(config,run_store_root=str(root))
+        assert "ACTUAL_CACHE_ROOT" in validate_e2_runtime_binding(candidate_config,
+            CachedBackend(ScientificTrap(),MessageCache(actual)),candidate)["errors"]
 
 
 def test_three_fscr_tiers_other_invalid_and_incomplete(e1_dir):
@@ -364,13 +411,21 @@ def test_preflight_call_bound_and_no_backend_execution(e1_dir):
         final_plans.extend(build_final_readout_request(pair.scenario,snap,c,config,"e2-test",visible[c])[0] for c,snap in planned.items())
         specs.extend(assemble_final_votes(pair.scenario.scenario_id,pair.scenario.final_vote_phase_id,final_calls(pair.scenario,pair.scenario.final_vote_phase_id)))
     probe={"backend":"not-executed","seed_supported":False,"model_available":False,"tokenizer_available":False}
-    report=validate_e2_preflight(config,overlays,pairs,probe,specs,branches,final_plans)
+    report=validate_e2_preflight(config,overlays,pairs,probe,specs,branches,final_plans,TOKENIZER_REVISION)
     assert report["passed"] and report["logical_calls"]==72 and not report["model_checks_executed"]
-    assert not validate_e2_preflight(config,overlays,pairs,probe,specs,(),final_plans)["passed"]
-    assert not validate_e2_preflight(config,overlays,pairs,probe,specs,branches[:-1],final_plans)["passed"]
-    assert not validate_e2_preflight(config,overlays,pairs,probe,specs,branches,final_plans[:-1])["passed"]
+    assert not validate_e2_preflight(config,overlays,pairs,probe,specs,branches,final_plans,"different-tokenizer")["passed"]
+    assert all(plan.identity.tokenizer_revision==TOKENIZER_REVISION for plan in final_plans)
+    scientific=replace(config,mode="scientific",run_id="scientific-e2",cache_root="/tmp/cache",
+        run_store_root="/tmp/runs",projected_total_tokens=100)
+    good_probe={"backend":"language-model","seed_supported":True,"model_available":True,
+        "tokenizer_available":True,"tokenizer_revision":"different"}
+    assert "PROBE_TOKENIZER_REVISION" in validate_e2_preflight(scientific,overlays,pairs,good_probe,specs,
+        branches,final_plans,TOKENIZER_REVISION)["errors"]
+    assert not validate_e2_preflight(config,overlays,pairs,probe,specs,(),final_plans,TOKENIZER_REVISION)["passed"]
+    assert not validate_e2_preflight(config,overlays,pairs,probe,specs,branches[:-1],final_plans,TOKENIZER_REVISION)["passed"]
+    assert not validate_e2_preflight(config,overlays,pairs,probe,specs,branches,final_plans[:-1],TOKENIZER_REVISION)["passed"]
     wrong=[replace(final_plans[0],phase="wrong"),*final_plans[1:]]
-    assert not validate_e2_preflight(config,overlays,pairs,probe,specs,branches,wrong)["passed"]
+    assert not validate_e2_preflight(config,overlays,pairs,probe,specs,branches,wrong,TOKENIZER_REVISION)["passed"]
 
 
 def test_lineage_rejects_cycle_cross_fact_and_final_communication(e1_dir):
@@ -438,7 +493,35 @@ def test_model_free_e2_orchestrator_closes_artifacts(tmp_path, e1_dir):
         ("ordinary_fscr","exposure_induced_fscr","retransmission_supported_fscr"))
     core={"relay-awareness","relay-stale-replay","relay-current-replay"}
     assert sum(call.condition in core for call in result["calls"])==27
+    eligibility=json.loads((store.run_dir/"eligibility.json").read_text())
+    assert (eligibility["candidate_n"],eligibility["eligible_n"])==(9,9)
+    assert set(eligibility["selected_evidence"]["e1-04"]) >= {"awareness_call_id","stale_call_id","current_call_id","pair_id","parent_snapshot_hash"}
+    upstream=json.loads((store.run_dir/"upstream_e1_provenance.json").read_text())
+    assert upstream["tokenizer_revision"]==TOKENIZER_REVISION
+    assert set(upstream["artifact_hashes"])=={"scenarios","calls","cache_provenance","report"}
+    replay=json.loads((store.run_dir/"upstream_replay_provenance.json").read_text())
+    assert len(replay)==len({row["e2_replay_message_id"] for row in replay})==18
+    cache=json.loads((store.run_dir/"cache_provenance.json").read_text())
+    assert len(cache)==72 and all({"call_id","scenario_id","condition","cache_key","cache_status","content_hash",
+        "origin_call_id","origin_resolution","input_tokens","output_tokens","total_tokens",
+        "generated_input_tokens","generated_output_tokens","generated_total_tokens"} <= set(row) for row in cache)
+    report=result["report"]
+    assert report["logical_call_count"]==72 and report["core_relay_call_count"]==27
+    assert report["cache_summary"]["hits"]+report["cache_summary"]["misses"]==72
+    for usage in report["token_usage"].values(): assert usage["total_tokens"]==usage["input_tokens"]+usage["output_tokens"]
+    persisted_votes=[json.loads(line) for line in (store.run_dir/"final_votes.jsonl").read_text().splitlines()]
+    required_vote_fields={"scenario_id","system_case_id","arm","final_vote_phase_id","source","target","relay","complete",
+        "exclusion_reasons","stale_majority","stale_majority_member_ids","tier_b_evaluable","tier_b_predicate",
+        "tier_b_evidence_ids","tier_c_evaluable","tier_c_predicate","tier_c_evidence_ids"}
+    assert len(persisted_votes)==18 and all(required_vote_fields<=set(row) for row in persisted_votes)
+    assert result["manifest"]["artifact_hashes"]["final_votes"]==digest(result["final_votes"])
+    assert result["manifest"]["started_at"]<=result["manifest"]["ended_at"]
     inputs=result["lineage_inputs"]
+    structural={(e.parent_message_id,e.child_message_id,e.relation) for e in inputs["edges"]}
+    calls={(c.scenario_id,c.condition):c for c in inputs["calls"]}
+    assert (calls[("e1-04","relay-stale-replay")].message_id,calls[("e1-04","relay-stale-final")].message_id,"final_vote_member") in structural
+    assert (calls[("e1-04","relay-current-replay")].message_id,calls[("e1-04","relay-current-final")].message_id,"final_vote_member") in structural
+    assert not any(e.relation=="tier_c_complete_path" and "relay-current" in e.parent_message_id for e in inputs["edges"])
     missing=[e for e in inputs["edges"] if not (e.relation=="exact_replay" and "e1-04" in e.parent_message_id)]
     broken=validate_e2_lineage(inputs["messages"],missing,inputs["replay_provenance"],inputs["calls"],inputs["topology"],result["final_votes"])
     assert not broken["system_cases"][stale_case]["tier_c_evaluable"]
@@ -461,6 +544,31 @@ def test_model_free_e2_orchestrator_closes_artifacts(tmp_path, e1_dir):
         invalid=validate_e2_lineage(inputs["messages"],list(inputs["edges"])+[LineageRecord(parent,child,relation)],
             inputs["replay_provenance"],inputs["calls"],inputs["topology"],result["final_votes"])
         assert not invalid["passed"] and invalid["final_final_edge_count"]==1
+
+
+def test_nonadopting_relay_emits_no_claim_lineage_but_remains_evaluable(tmp_path,e1_dir):
+    scenarios={s.scenario_id:s for s in compile_e1_scenarios().scenarios}
+    class Mixed:
+        def generate(self,request):
+            s=scenarios[request.scenario_id]
+            stale=request.condition in {"relay-stale-replay","target-stale-final","relay-stale-final"}
+            if request.scenario_id=="e1-04" and request.condition=="relay-stale-replay": stale=False
+            return BackendOutput("ANSWER="+(s.v_old if stale else s.v_new),TokenUsage(2,1,3))
+    config=E2RunConfig(tokenizer_revision=TOKENIZER_REVISION,run_id="e2-mixed")
+    result=run_e2(config,e1_dir[0],E1RunExpectation(tokenizer_revision=TOKENIZER_REVISION),
+        CachedBackend(Mixed(),MessageCache(tmp_path/"mixed-cache")),RunStore(tmp_path/"mixed-runs").create(config.run_id),{})
+    claims=[e for e in result["lineage_inputs"]["edges"] if e.relation=="relay_stale_adoption" and "e1-04" in e.parent_message_id]
+    case=result["lineage"]["system_cases"]["e1-04:e2-system:stale"]
+    assert not claims and case["tier_c_evaluable"] and not case["tier_c_predicate"]
+    metric=result["report"]["fscr"]["retransmission_supported_fscr"]
+    assert metric["denominator_n"]==18 and metric["numerator_n"]==8
+    inputs=result["lineage_inputs"]; calls={(c.scenario_id,c.condition):c for c in inputs["calls"]}
+    rs=calls[("e1-04","relay-stale-replay")]; rf=calls[("e1-04","relay-stale-final")]
+    forged=list(inputs["edges"])+[LineageRecord(rs.message_id,rf.message_id,"relay_stale_adoption"),
+        LineageRecord(rs.message_id,rf.message_id,"tier_c_complete_path")]
+    invalid=validate_e2_lineage(inputs["messages"],forged,inputs["replay_provenance"],inputs["calls"],inputs["topology"],result["final_votes"])
+    assert any(error.startswith("FALSE_RELAY_STALE_ADOPTION") for error in invalid["errors"])
+    assert any(error.startswith("FALSE_TIER_C_CLAIM") for error in invalid["errors"])
 
 
 def test_failed_preflight_never_finalizes_manifest(tmp_path,e1_dir):

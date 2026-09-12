@@ -83,7 +83,8 @@ def _get(value, name, default=None):
 
 
 def validate_e2_preflight(config, overlays, replay_pairs, backend_probe,
-                          final_vote_spec, branch_plans, final_call_plans):
+                          final_vote_spec, branch_plans, final_call_plans,
+                          validated_e1_tokenizer_revision):
     """Validate the entire E2 plan without touching a tokenizer or backend."""
     errors=[]; overlays=tuple(overlays); replay_pairs=tuple(replay_pairs); branch_plans=tuple(branch_plans)
     final_call_plans=tuple(final_call_plans)
@@ -92,6 +93,7 @@ def validate_e2_preflight(config, overlays, replay_pairs, backend_probe,
         (config.temperature==0,"TEMPERATURE"),(config.top_p==1,"TOP_P"),
         (config.models==(PRODUCTION_MODEL_ID,),"MODEL"),(config.model_revision==E2_MODEL_REVISION,"MODEL_REVISION"),
         (bool(config.tokenizer_revision),"TOKENIZER_REVISION"),(config.seed==7,"SEED"),
+        (bool(validated_e1_tokenizer_revision) and config.tokenizer_revision==validated_e1_tokenizer_revision,"E1_E2_TOKENIZER_REVISION"),
         (config.max_new_tokens==32,"MAX_NEW_TOKENS"),(config.experiment=="E2","EXPERIMENT"),
         (config.method=="state-mad-e2","METHOD"),(config.mode in {"dry-run","scientific"},"MODE"),
         (config.eligible_ids==E2_ELIGIBLE_IDS,"ELIGIBLE_IDS"),(config.e1_run_id==E2_E1_RUN,"E1_RUN"),
@@ -168,6 +170,7 @@ def validate_e2_preflight(config, overlays, replay_pairs, backend_probe,
         if not config.run_store_root: errors.append("RUN_STORE_ROOT")
         if config.projected_total_tokens<=0: errors.append("SCIENTIFIC_TOKEN_PROJECTION")
         if backend_probe.get("backend")!="language-model": errors.append("SCIENTIFIC_BACKEND")
+        if backend_probe.get("tokenizer_revision",config.tokenizer_revision)!=config.tokenizer_revision: errors.append("PROBE_TOKENIZER_REVISION")
         for field in ("seed_supported","model_available","tokenizer_available"):
             if not backend_probe.get(field,False): errors.append(field.upper())
     return {"passed":not errors,"errors":tuple(errors),"resolved":dict(backend_probe),

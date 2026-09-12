@@ -173,8 +173,6 @@ def validate_e2_lineage(messages, edges, replay_provenance, calls, topology, fin
         stale_peer=(_field(stale_call,"parent_message_ids",()) or (None,))[0]
         rs=by_condition.get("relay-stale-replay"); rc=by_condition.get("relay-current-replay"); ra=by_condition.get("relay-awareness")
         relay_branch=rs if case.get("arm")=="stale" else rc
-        stale_system=next((item for item in final_votes if item.get("scenario_id")==sid and item.get("arm")=="stale"),{})
-        stale_relay_final=next((v.get("message_id") for v in stale_system.get("votes",()) if v.get("author")=="relay"),None)
         seed_message=by_id.get(stale_peer); replay_message=by_id.get(replay_mid)
         semantics_ok=(seed_message is not None and _field(seed_message,"generation_validity")=="current" and
             _field(seed_message,"decision_validity")=="stale" and replay_message is not None and
@@ -189,8 +187,7 @@ def validate_e2_lineage(messages, edges, replay_provenance, calls, topology, fin
             (replay_mid,_field(rs,"message_id"),"target_to_relay_exposure"),
             (_field(ra,"message_id"),_field(rs,"message_id"),"relay_awareness_sibling"),
             (_field(rc,"message_id"),_field(rs,"message_id"),"relay_matched_sibling"),
-            (_field(rs,"message_id"),stale_relay_final,"relay_stale_adoption"),
-            (_field(relay_branch,"message_id"),relay_final.get("message_id"),"tier_c_complete_path")}
+            (_field(relay_branch,"message_id"),relay_final.get("message_id"),"final_vote_member")}
         c_evaluable=b_evaluable and relay_ok and replay_ok and semantics_ok and relay_topology_ok and c_expected<=edge_set
         relay_stale=_field(by_condition.get("relay-stale-replay"),"answer_class")=="STALE"
         c_predicate=c_evaluable and case.get("arm")=="stale" and relay_stale and stale_majority
@@ -201,6 +198,24 @@ def validate_e2_lineage(messages, edges, replay_provenance, calls, topology, fin
             "tier_b_evidence_ids":evidence_ids if b_evaluable else (),"tier_c_evaluable":c_evaluable,
             "tier_c_predicate":c_predicate,"tier_c_evidence_ids":evidence_ids if c_evaluable else (),
             "errors":tuple(case_errors)}
+    calls_by_message={_field(c,"message_id"):c for c in calls}
+    votes_by_message={v.get("message_id"):(case,v) for case in final_votes for v in case.get("votes",())}
+    for edge in edges:
+        relation=_field(edge,"relation"); parent=_field(edge,"parent_message_id"); child=_field(edge,"child_message_id")
+        if relation=="relay_stale_adoption":
+            relay_call=calls_by_message.get(parent); case_vote=votes_by_message.get(child)
+            sid=_field(relay_call,"scenario_id"); awareness=next((c for c in calls if _field(c,"scenario_id")==sid and _field(c,"condition")=="relay-awareness"),None)
+            if (_field(relay_call,"condition")!="relay-stale-replay" or _field(relay_call,"answer_class")!="STALE" or
+                _field(awareness,"answer_class")!="CURRENT" or not case_vote or case_vote[1].get("author")!="relay"):
+                errors.append(f"FALSE_RELAY_STALE_ADOPTION:{parent}:{child}")
+        elif relation=="tier_b_stale_majority_member":
+            case_vote=votes_by_message.get(child)
+            if not case_vote or case_vote[1].get("answer_class")!="STALE" or not system_cases.get(case_vote[0].get("system_case_id"),{}).get("tier_b_predicate"):
+                errors.append(f"FALSE_TIER_B_CLAIM:{parent}:{child}")
+        elif relation=="tier_c_complete_path":
+            case_vote=votes_by_message.get(child)
+            if not case_vote or not system_cases.get(case_vote[0].get("system_case_id"),{}).get("tier_c_predicate"):
+                errors.append(f"FALSE_TIER_C_CLAIM:{parent}:{child}")
     return {"passed":not errors,"errors":tuple(errors),
         "paths":{mid:tuple(sorted(ancestors(mid))) for mid in by_id},
         "system_cases":system_cases,"final_final_edge_count":len(final_final_edges)}
