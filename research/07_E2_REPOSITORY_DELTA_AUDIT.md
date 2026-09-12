@@ -4,12 +4,14 @@ Status: **AUDIT ONLY — NO IMPLEMENTATION AUTHORIZED**
 
 ## 1. Audit Scope and Authority
 
-This artifact is a read-only, E2-specific delta audit of the repository at
-`b241290073a359403ea025a70317ae608a02f820`. The checkout branch is `work`;
-the sandbox has neither a local `main` ref nor a configured remote. `HEAD`
-nevertheless equals the human-specified expected starting `main` commit, so
-the audit proceeds against that exact object. No claim is made that the
-sandbox can independently verify the GitHub remote.
+This artifact is a read-only, E2-specific delta audit based on
+`b241290073a359403ea025a70317ae608a02f820`. GitHub PR #16 provenance supplied
+by the human records base `b241290073a359403ea025a70317ae608a02f820`, head
+branch `codex/e2`, and pre-amendment head
+`b89069cfd4e3b518b9b169f86cdc6292737b24f8`. The sandbox checkout has neither
+a local `main` ref nor a configured remote; its local branch name is not
+treated as the authoritative GitHub PR branch. No claim is made that the
+sandbox can independently verify the remote provenance.
 
 The audit applied authority in this order:
 
@@ -149,14 +151,15 @@ and current-Target replay.
 | Preserve exact Target text | **REUSE** | `CallRecord.raw_output`, `MessageRecord.raw_content`, and cache payload preserve the string. |
 | Construct Target→Relay replay envelope | **WRAP** | Create a new E2 exposure `MessageRecord` whose `raw_content` is byte/text-identical to the resolved E1 `raw_output`, with new identity and explicit linkage held in E2 provenance. |
 | Relay parent/forks | **REUSE** | Frozen `Snapshot`, `make_pre_exposure_snapshot`, and `fork_snapshot` already provide immutable sibling semantics. |
+| E2 Agent-role/visibility representation | **WRAP** | `ScenarioRecord` is E1-shaped: `agents` has two elements, only `target_visible_versions` exists, and current validation proves Target rather than Relay visibility. Preserve the E1 scenario/hash and bind Source, Target, Relay, Relay `v_new` availability, Relay snapshot, and final-vote phase in a sealed E2 overlay. |
 | Relay awareness | **REUSE** | `render_awareness_probe` / `awareness-v3` is role-neutral and checks `v_new` availability. |
 | Relay decision rendering | **REUSE** | `render_decision` / `decision-v2` concatenates `MessageRecord.raw_content` unchanged. |
-| E2 orchestration | **NEW** | A narrow E2 module remains absent, as deliberately stated by E1. |
+| E2 orchestration | **NEW** | A narrow E2 module remains absent, as deliberately stated by E1. It must own the sealed role/visibility overlay, Relay replay branches, and a compliant three-Agent final-vote orchestration/record assembly once that construction is resolved at the E2 Implementation Map gate. |
 | Downstream generation/cache | **REUSE** | `CachedBackend`, `MessageCache`, and effective-input identity work for Relay calls. |
 | E2 preflight | **EXTEND** | Add E2-only frozen config and fail-closed checks; do not relax E0/E1 checks. |
 | Deterministic grading | **REUSE** | `grade_output` already yields the required four classes. |
-| E2 metric | **EXTEND** | `metrics.py` has E0/E1 only; add pure offline `SRR_cond` and paired contrast. |
-| E2 lineage validation | **EXTEND** | Generic edge records are usable, but the validators stop at E1. |
+| E2 metric | **EXTEND** | `metrics.py` has E0/E1 only; add pure offline `SRR_cond`, paired contrast, Ordinary FSCR, Exposure-Induced FSCR, and Retransmission-Supported FSCR. |
+| E2 lineage validation | **EXTEND** | Generic edge records are usable, but the validators stop at E1 and cannot yet prove Tier-B causal-adopter membership, the complete Tier-C second-hop path, or same-phase final votes. |
 | Run persistence | **REUSE/WRAP** | `RunStore` writes calls, messages, lineage, and write-once JSON; E2 needs new provenance/table artifacts, not a storage redesign. |
 | Manifest | **REUSE/WRAP** | Generic artifact hashing and effective-generation provenance work; E2 must supply additional artifact hashes and frozen E1 references. |
 | MAD-M² core | **REUSE unchanged** | No `src/` edit is required. |
@@ -272,6 +275,35 @@ Relay decision parent or siblings.
 No repository evidence requires a prompt redesign. A change to awareness-v3
 would break comparability and is not authorized by this audit.
 
+### 6.3 E1-only scenario role shape and E2 overlay
+
+The current `ScenarioRecord` remains intentionally E1-shaped:
+
+- `agents` is a two-element tuple;
+- `target_visible_versions` is the only explicit Agent-visibility field;
+- there is no explicit Relay visibility field; and
+- the scenario validator verifies Target access to the current version, not
+  Relay access before E2 exposure.
+
+This must not be obscured by treating the E1 record as if it already declared
+a Relay. The wrapper-first minimum is a sealed E2 overlay/reference structure,
+owned by `e2.py` and persisted in the E2 run artifacts, which binds:
+
+- deterministic Source, Target, and Relay identities;
+- the frozen E1 scenario ID and scenario-set hash without changing either;
+- the Relay pre-exposure snapshot ID and hash;
+- an explicit, mechanically validated statement that `v_new` is available to
+  Relay before exposure; and
+- the frozen `final_vote_phase_id` used by any counted three-Agent vote.
+
+E2 preflight must validate this overlay, prove Relay current-state
+availability before any exposure or downstream call, and enforce exactly/no
+more than three Agents. This can remain owned by `e2.py` plus the E2 preflight;
+static inspection finds no present need to modify `schema.py`, `scenarios.py`,
+or `validation.py`. If the overlay cannot safely express these requirements
+without changing `ScenarioRecord`, the E1 compiler, or the frozen E1 scenario
+hash/semantics, the required result is **STOP — HUMAN DECISION REQUIRED**.
+
 ## 7. Relay Matched-Branch Audit
 
 ### 7.1 Replay message identity and provenance
@@ -367,7 +399,8 @@ schema extension for E2.
 
 ### 8.2 Upstream evidence versus downstream cache
 
-These must be separate concepts and preferably separate paths:
+These must be logically separate concepts. They need not, and must not merely
+for stage names, be forced into separate physical cache namespaces:
 
 **A. Immutable upstream evidence source**
 
@@ -382,8 +415,8 @@ or promote it into a new upstream generation cache.
 
 **B. Downstream E2 generation cache**
 
-- a distinct E2 run-configured `MessageCache` used only for Relay awareness
-  and Relay treatment/control outputs;
+- the normal scientific `MessageCache` contract, used for Relay awareness and
+  Relay treatment/control outputs;
 - normal `CachedBackend` hit/miss behavior under effective Relay identities;
 - downstream cache provenance identifying Relay calls, while separately
   linking each replay envelope to frozen E1 evidence.
@@ -391,6 +424,14 @@ or promote it into a new upstream generation cache.
 An E2 downstream cache hit may prevent a Relay regeneration. It cannot serve
 as proof of which E1 upstream record was replayed; that proof comes from the
 cross-run provenance table and verified hashes.
+
+Logical/read-write separation is mandatory: frozen E1 evidence is resolved
+directly from read-only run artifacts and is never recovered through a
+generation call, whereas downstream Relay outputs use normal cache
+generation. Physical layout must preserve global identical-effective-input
+reuse. An E2 directory or experiment namespace must not create an artificial
+miss when the complete `EffectiveGenerationIdentity` is identical, and stage
+metadata must not be added to that identity merely to force separation.
 
 ## 9. Lineage Audit
 
@@ -428,6 +469,13 @@ requires the full second-hop path. A minimal pure validator must require:
 9. completed deterministic Relay grades; and
 10. no semantic inference beyond stored classes and exact IDs/hashes.
 
+For FSCR, the extension must additionally prove that all three counted Source,
+Target, and Relay decisions share the declared post-update
+`final_vote_phase_id`; reject `m_old` and every exposure-phase message as a
+vote; verify Tier B's causal-adopter majority membership; and verify Tier C's
+complete exact-replay second-hop ancestry. A generic stale majority without
+those predicates may support only Ordinary FSCR.
+
 The existing three-field edge type is sufficient if cross-run message IDs are
 globally namespaced and the separate replay-provenance record supplies source
 run/call/cache details. Otherwise ambiguous ID collisions force a stop, not
@@ -437,7 +485,10 @@ invented lineage.
 
 `metrics.py` currently computes token summaries, E0 metrics, and E1 metrics.
 It does **not** compute `SRR_cond`, the matched Relay contrast, or any of the
-three false-consensus tiers.
+three false-consensus tiers. This is an E2 implementation gap, not optional
+future work: the full frozen E2 implementation must always support and report
+Ordinary FSCR, Exposure-Induced FSCR, and Retransmission-Supported FSCR in
+addition to the retransmission outputs.
 
 The minimum E2 metric extension is a pure offline function that:
 
@@ -456,16 +507,31 @@ The minimum E2 metric extension is a pure offline function that:
 - labels interpretation `conditional`; and
 - applies the frozen Gate-4 labels without calling a model.
 
-No current false-consensus implementation is reusable: the legacy generic
-consensus helper is scientifically insufficient, and `state_mad/metrics.py`
-has none. Although the frozen full E2 plan names consensus outputs, the
-task-specific Pilot request is to determine the minimum delta for conditional
-secondary retransmission. Therefore consensus must not be smuggled into this
-minimal implementation. If a later E2 authorization explicitly requires
-final-vote/FSCR execution now, the already mapped deterministic three-tier
-extension can be separately authorized; until then it remains a known
-unimplemented capability, not a blocker to `SRR_cond` and matched Relay
-contrast.
+The same pure deterministic extension must implement:
+
+- **Ordinary FSCR:** a stale majority among three complete Agent votes sharing
+  one post-update `final_vote_phase_id`;
+- **Exposure-Induced FSCR:** Ordinary FSCR plus at least one stale-majority
+  member with verified paired causal stale-adoption lineage; and
+- **Retransmission-Supported FSCR:** Ordinary FSCR plus the complete verified
+  Source seed → current-aware Target → paired Target adoption → exact
+  replay → current-aware Relay → Relay stale-adoption path.
+
+Every tier must emit exact numerator, denominator, included/excluded IDs, and
+the frozen conditional/diagnostic interpretation. Incomplete final phases are
+excluded exactly as frozen, and the pre-update `m_old` exposure message is
+never a vote. No current false-consensus implementation is reusable: the
+legacy generic helper lacks phase and lineage semantics, and
+`state_mad/metrics.py` has none.
+
+The frozen artifacts specify the required vote eligibility and tier semantics
+but static inspection does not identify a complete E2 final-vote generation
+sequence: specifically, which already-produced Agent decisions are reused as
+final votes versus which additional post-update decisions must be assembled.
+The E2 Implementation Map must resolve a compliant construction without
+changing the frozen design, Agents, rounds, or replay contract. If it cannot,
+**STOP — HUMAN DECISION REQUIRED AT E2 IMPLEMENTATION MAP**. This is a design-
+resolution gate, not permission to omit any frozen FSCR output.
 
 ## 11. Run-Store and Manifest Audit
 
@@ -486,6 +552,9 @@ A future E2 run should contain, at minimum:
   scenario artifact and scenario-set hash;
 - `eligibility.json` with all nine candidates and mechanical inclusion/
   exclusion reasons;
+- `e2_scenario_overlay.json` binding Source/Target/Relay roles, frozen E1
+  scenario references, Relay visibility/snapshot evidence, and
+  `final_vote_phase_id` without changing the E1 scenario artifact;
 - `upstream_e1_provenance.json` recording the frozen run ID, repository SHA,
   scenario-set hash, model/tokenizer revisions, seed, E1 manifest hash, and
   relevant E1 artifact hashes;
@@ -496,9 +565,12 @@ A future E2 run should contain, at minimum:
 - `lineage.jsonl`, including cross-run exact-replay references;
 - `branch_topology.json` or equivalent report data proving the common Relay
   parent and isolated awareness sibling;
+- `final_votes.jsonl` or an equivalently sealed structured artifact containing
+  exactly the three post-update Agent decisions used for each complete final
+  phase, with phase IDs and message references;
 - downstream `cache_provenance.json` for E2-generated Relay calls;
-- `report.json` with deterministic `SRR_cond`, matched contrast, denominator,
-  exclusions, tokens, and Gate-4 status; and
+- `report.json` with deterministic `SRR_cond`, matched contrast, all three
+  FSCR tiers, denominators, exclusions, tokens, and Gate-4 status; and
 - a manifest hash for every above scientific artifact or reference table.
 
 The current `finalize_manifest` minimum required-name check can remain; E2
@@ -526,6 +598,12 @@ Target, Relay—and one frozen model. E1 already supplies Source→Target; E2 ad
 only Target→Relay matched exposure. It requires no more than two main
 communication hops/rounds, retains temperature `0`, top-p `1`, fixed seed and
 revision, and makes no new upstream call.
+
+The one unresolved design detail is the compliant assembly/generation of the
+three same-post-update-phase final votes required for FSCR. It must be mapped
+within the existing three-Agent/two-round envelope before implementation. Its
+absence does not justify a core change or omission of FSCR; failure to derive
+it from the frozen artifacts triggers the E2 Implementation Map stop gate.
 
 If static inspection during implementation proves that a `src/` core edit is
 necessary, the required action is **STOP — HUMAN DECISION REQUIRED**. This
@@ -579,6 +657,17 @@ sealed fixtures and a backend that fails if touched during upstream loading.
     explicit scientific paths; violations fail before a downstream call.
 17. **Offline metric purity:** E2 eligibility, lineage, and metric recomputation
     complete with zero model/backend/tokenizer calls.
+18. **Common final-vote phase:** all three counted Agent decisions carry the
+    same declared post-update `final_vote_phase_id`; mixed or pre-update phases
+    are rejected.
+19. **No seed-as-vote:** the pre-update `m_old` seed/exposure is never counted
+    among the three final decisions, even when its value is stale.
+20. **FSCR tier distinction:** hand-built traces separately establish Ordinary,
+    Exposure-Induced, and Retransmission-Supported FSCR, and prevent promotion
+    to Tier B or C when their causal/second-hop lineage predicate is missing.
+21. **Incomplete final phases:** fewer than three eligible same-phase Agent
+    votes are excluded with the exact frozen reason and from every applicable
+    denominator.
 
 No test should invoke a tokenizer merely to compare the already accepted
 canonical E1 output skeleton. Skeleton validity is character/structure based
@@ -591,7 +680,7 @@ a list of changes made now.
 
 | Path | Current role | E2 need | Class | Reason | Risk |
 | --- | --- | --- | --- | --- | --- |
-| `state_mad/e2.py` | Absent by design | Read-only E1 resolver, eligibility verification, replay envelope construction, Relay sibling orchestration | **NEW** | Keeps E2 isolated and implements approved Stage-05 P2.1 | Highest: accidental upstream generation or ambiguous artifact resolution; must fail closed |
+| `state_mad/e2.py` | Absent by design | Read-only E1 resolver, sealed Source/Target/Relay visibility overlay, eligibility verification, replay envelopes, Relay sibling orchestration, and compliant final-vote orchestration/record assembly | **NEW** | Keeps E2 isolated and implements approved Stage-05 P2.1/P2.2 without changing E1 scenario semantics | Highest: accidental upstream generation, ambiguous evidence, or underspecified final-vote construction; fail closed/map gate |
 | `state_mad/snapshots.py` | Immutable parent/fork primitives | Use unchanged for Relay | **REUSE** | Already supports current version and sibling forks | Low; wrapper must assert parent preservation |
 | `state_mad/prompts.py` | `awareness-v3`, `decision-v2` and peer renderers | Use first two unchanged | **REUSE** | Role-neutral awareness and exact raw peer insertion already work | Low; do not expose new provenance text |
 | `state_mad/cache.py` | Immutable key-addressed cache | Downstream Relay cache only | **REUSE** | Exact hit behavior and duplicate protection already exist | Medium; never use as upstream resolver with generation fallback |
@@ -600,17 +689,17 @@ a list of changes made now.
 | `state_mad/grading.py` | Canonical deterministic grader | Grade Relay and validate existing skeleton | **REUSE/WRAP** | Current one-line skeleton is sufficient; a small E2 selector wrapper can require both valid | Low |
 | `state_mad/run_store.py` | Generic non-overwrite run artifacts | Persist E2 records/tables | **REUSE** | Existing append/message/write-once operations suffice | Low |
 | `state_mad/manifest.py` | Generic manifest builder/finalizer | Bind E1 references and E2 artifacts | **WRAP** | E2 orchestrator can supply hashes without changing generic code | Medium; all new evidence tables must actually be hashed |
-| `state_mad/preflight.py` | Frozen E0/E1 config validation | Add E2 config and fail-closed bounds/provenance checks | **EXTEND** | E2 requires three Agents and upstream evidence checks without weakening E1 | Medium |
-| `state_mad/lineage.py` | E0/E1 ancestry validation | Validate full cross-run exact-replay second hop | **EXTEND** | Current validators stop at Target | Medium-high; false path acceptance would invalidate claims |
-| `state_mad/metrics.py` | E0/E1 deterministic metrics | Add `SRR_cond`, paired Relay contrast, exclusions, Gate 4 | **EXTEND** | No E2 metric exists | Medium; denominator/interpretation must remain conditional |
-| `tests/state_mad/test_e2.py` | Absent | Model-free resolver/replay/snapshot/cache/lineage/metric tests | **NEW** | Isolates E2 tests and zero-call guards | Low |
+| `state_mad/preflight.py` | Frozen E0/E1 config validation | Add E2 config plus role-overlay, Relay-visibility, three-Agent, final-phase, and provenance checks | **EXTEND** | E2 must safely add Relay without changing the frozen E1 scenario/hash | Medium |
+| `state_mad/lineage.py` | E0/E1 ancestry validation | Validate full cross-run exact-replay second hop, Tier-B membership, Tier-C path, and same-phase final votes | **EXTEND** | Current validators stop at Target and have no FSCR predicates | Medium-high; false path/tier acceptance would invalidate claims |
+| `state_mad/metrics.py` | E0/E1 deterministic metrics | Add `SRR_cond`, paired Relay contrast, all three FSCR tiers, exclusions, and Gate 4 | **EXTEND** | No E2 retransmission or FSCR metric exists | Medium-high; denominators, phases, and interpretations must remain frozen |
+| `tests/state_mad/test_e2.py` | Absent | Model-free resolver/replay/overlay/snapshot/cache/lineage/retransmission/FSCR tests | **NEW** | Isolates E2 tests and zero-call guards | Low |
 | `state_mad/e1.py` | Completed E1 runner/artifact writer | Consume outputs read-only; no edit | **REUSE** | E1 must not change or rerun | High if modified; explicitly avoid |
 | `src/**` / MAD-M² core | Official engineering base | No E2 change | **REUSE** | Wrapper path is sufficient | Stop trigger if an edit appears necessary |
 
 ### Minimum future source-file change set
 
-For the minimum authorized `SRR_cond` Pilot path, the candidate source changes
-are exactly:
+For the full frozen E2 Pilot path, including mandatory FSCR outputs, the
+candidate source changes are exactly:
 
 - **NEW** `state_mad/e2.py`;
 - **EXTEND** `state_mad/preflight.py`;
@@ -623,6 +712,11 @@ files should be reused unchanged. This minimum assumes the E2-specific module
 owns its read-only artifact decoder and provenance-table validation. A shared
 generic run reader could instead be a small new module, but is not necessary
 at Pilot scale and should not be added absent demonstrated reuse need.
+It also assumes the E2 Implementation Map resolves final-vote construction
+within `e2.py`; failure to do so is a stop gate, not authorization to omit
+FSCR. The sealed E2 role/visibility overlay can remain owned by `e2.py` and
+E2 preflight, so no `ScenarioRecord`, compiler, or E1 validator change is
+currently indicated.
 
 ## 15. Risks / Ambiguities
 
@@ -652,13 +746,20 @@ at Pilot scale and should not be added absent demonstrated reuse need.
    separately render `MessageRecord.author`. E1 did the same. Metadata can
    establish `author=Target`; changing model-visible labeling would change the
    prompt and requires explicit human review.
-9. **Consensus scope.** No false-consensus metric exists. It is unnecessary
-   for the minimum conditional retransmission runner requested here, but the
-   full frozen E2 output list includes the three tiers. Their timing must be
-   explicitly decided before scientific authorization; they must not be
-   silently approximated.
+9. **Final-vote construction.** No false-consensus metric or complete E2
+   final-vote orchestration exists. All three FSCR outputs are mandatory. The
+   E2 Implementation Map must derive one compliant same-post-update-phase
+   three-Agent construction from frozen artifacts or stop for human decision;
+   it may neither omit nor silently approximate the tiers.
 10. **No inference from estimability.** Nine eligible cases permit the frozen
     Gate-4 pilot attempt; they do not imply a positive second hop.
+11. **E1-shaped scenario record.** The two-Agent `agents` tuple and Target-only
+    visibility field do not themselves establish Relay visibility. A sealed
+    E2 overlay must add that evidence without altering the E1 scenario/hash.
+12. **Physical cache partitioning.** A convenient E2-specific directory could
+    cause artificial misses for identical effective inputs. Logical upstream
+    read-only/downstream read-write separation must not defeat normal
+    scientific cache-key reuse.
 
 ## 16. Human-Decision Triggers
 
@@ -689,8 +790,9 @@ Any of the following requires **STOP — HUMAN DECISION REQUIRED**:
   ceiling;
 - scientific E2 execution is requested before explicit implementation and
   generation authorization; or
-- full E2 consensus outputs are required now but their final-vote construction
-  is not explicitly authorized in the minimal Pilot delta.
+- a compliant same-post-update-phase three-Agent final-vote construction
+  cannot be mapped from the frozen artifacts without changing scientific
+  scope: **STOP — HUMAN DECISION REQUIRED AT E2 IMPLEMENTATION MAP**.
 
 No trigger may be resolved by adding models, Agents, rounds, scenarios, seeds,
 semantic classifiers, judges, or architecture.
@@ -707,8 +809,24 @@ semantic classifiers, judges, or architecture.
 | **F. Is decision-v2 reusable unchanged?** | **Yes.** It inserts exact `raw_content`; an E2 wrapper supplies one verified replay message. |
 | **G. Is MessageRecord provenance sufficient?** | **Partly.** It is sufficient for exact content, identity, author/recipient, validity, phase, and parents, but not original cross-run call/cache provenance; add a separate sealed E2 replay-provenance table, not a schema redesign. |
 | **H. Is EffectiveGenerationIdentity sufficient?** | **Yes** for deterministic downstream generation cache identity because it includes complete model-visible inputs and generation parameters. Metadata remains logged outside the key. |
-| **I. Minimum future source changes?** | New `state_mad/e2.py`; extend `preflight.py`, `lineage.py`, and `metrics.py`; add model-free `tests/state_mad/test_e2.py`. Reuse other files unchanged. |
-| **J. What forces STOP?** | Any ambiguous/unverifiable exact E1 evidence, need to regenerate/edit/substitute, integrity/provenance mismatch, inability to preserve matched immutable branches, scope/resource expansion, or apparent MAD-M² core change. |
+| **I. Minimum future source changes?** | New `state_mad/e2.py`; extend `preflight.py`, `lineage.py`, and `metrics.py`; add model-free `tests/state_mad/test_e2.py`. `e2.py`/preflight own the sealed role/visibility overlay and `e2.py` owns mapped final-vote assembly. Reuse other files unchanged. |
+| **J. What forces STOP?** | Any ambiguous/unverifiable exact E1 evidence, need to regenerate/edit/substitute, integrity/provenance mismatch, inability to preserve matched immutable branches, unsafe Relay representation without changing E1 semantics, inability to map compliant three-Agent same-phase final votes, scope/resource expansion, or apparent MAD-M² core change. |
+
+Additional reviewed findings:
+
+- **Frozen E2 FSCR outputs: MANDATORY IN IMPLEMENTATION MAP.** All three tiers
+  must be supported; none can be deferred merely because `SRR_cond` is the
+  immediate retransmission metric.
+- **Relay role/visibility representation:** use a sealed E2 overlay binding
+  Source/Target/Relay, frozen scenario references, Relay snapshot/current
+  availability, and final phase; retain the E1 scenario record/hash unchanged.
+- **Cache physical/logical separation:** upstream E1 evidence is direct and
+  read-only, while downstream Relay calls use the normal scientific cache;
+  physical namespacing must not defeat identical-effective-input reuse.
+- **Final-vote construction status:** required but not completely instantiated
+  in current code. It must be resolved at the E2 Implementation Map gate; if a
+  compliant frozen-scope construction cannot be derived, stop for human
+  decision.
 
 ### Verdict
 
@@ -717,10 +835,14 @@ semantic classifiers, judges, or architecture.
 The repository already provides exact raw text preservation, effective-input
 caching, immutable sibling snapshots, reusable awareness/decision prompts,
 deterministic grading, generic run persistence, and sufficient core message
-lineage. The narrow gaps are an E2-only read/verify/replay orchestrator,
-E2 preflight, full second-hop lineage validation, conditional metric logic,
-and model-free tests. These are wrapper/isolated extensions; they require no
-MAD-M² core, prompt, schema, cache, backend, E1, or snapshot modification.
+lineage. The bounded gaps are an E2-only read/verify/replay/final-vote
+orchestrator, a sealed Relay role/visibility overlay, E2 preflight, full
+second-hop and FSCR-tier lineage validation, conditional retransmission and
+three-tier FSCR metric logic, and model-free tests. These remain candidate
+wrapper/isolated extensions; static inspection requires no MAD-M² core,
+prompt, schema, cache, backend, E1, scenario compiler, validator, or snapshot
+modification. Final-vote construction must be resolved at the E2
+Implementation Map gate before implementation authorization.
 
 This verdict means ready for human review of a dedicated E2 implementation
 map/authorization. It does **not** authorize E2 implementation or scientific
