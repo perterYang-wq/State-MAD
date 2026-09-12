@@ -49,11 +49,9 @@ memory architecture.
 
 Static inspection confirms the approved delta-audit reuse path for exact E1
 loading, an E2 overlay, Relay sibling branches, cache behavior, and conditional
-metrics. It also confirms that the frozen documents define the three FSCR
-predicates but **do not uniquely determine the three model decisions and their
-visibility at the shared final phase**. Section H records the resulting stop
-gate rather than selecting a scientifically consequential design for coding
-convenience.
+metrics. The human-frozen Section-H decision now uniquely fixes the three
+role-specific final readouts, their branch-local visibility, matched-system
+assembly, and non-communicative round accounting.
 
 ## A. Exact read-only E1 upstream resolver
 
@@ -131,7 +129,7 @@ source_agent_id="source", target_agent_id="target", relay_agent_id="relay",
 relay_current_version_id=<ScenarioRecord.version_new_id>,
 relay_current_evidence_event_ids=<deterministically selected update events>,
 relay_parent_snapshot_id, relay_parent_snapshot_hash,
-final_vote_phase_id=<authorized post-update phase>, overlay_schema="e2-overlay-v1"
+final_vote_phase_id=<ScenarioRecord.final_vote_phase_id>, overlay_schema="e2-overlay-v1"
 ```
 
 Agent IDs are distinct and sorted/serialized in fixed Source/Target/Relay field
@@ -149,8 +147,9 @@ record and the aggregate digest, checks its E1 scenario/hash binding, distinct
 roles, `v_new`, event ordering, Relay parent ID/hash, and post-update
 `final_vote_phase_id`, and rejects unknown fields or rows. It neither edits nor
 recompiles the frozen E1 scenarios and therefore does not change their bytes or
-scenario-set hash. If the final-vote phase is not human-resolved, overlay
-sealing cannot complete and scientific preflight must stop.
+scenario-set hash. The phase is copied from
+`ScenarioRecord.final_vote_phase_id`; E2 must not fabricate a replacement
+phase. A mismatch prevents overlay sealing and fails scientific preflight.
 
 ## C. Relay snapshot, awareness, and matched branching
 
@@ -253,7 +252,9 @@ contract.
 
 Extend `state_mad/preflight.py` with frozen `E2RunConfig` and
 `validate_e2_preflight(config, overlays, replay_pairs, backend_probe,
-final_vote_spec)`. Required fields/constraints are:
+final_vote_spec)`. The required human-frozen mode is
+`final_vote_mode = "synchronized-role-specific-noncommunicative-v1"`. Required
+fields/constraints are:
 
 | Field | Required constraint |
 | --- | --- |
@@ -269,7 +270,7 @@ final_vote_spec)`. Required fields/constraints are:
 | scientific backend | production language-model backend only in scientific mode |
 | overlays | nine unique, sealed, digest-valid, E1-bound, Relay has `v_new` pre-exposure |
 | replay pairs | nine exact canonical pairs passing all Section-A predicates |
-| final votes | complete authorized construction, three roles, one post-update phase |
+| final votes | frozen mode; two system cases; one shared Source, two Target, and two Relay logical calls; one `ScenarioRecord.final_vote_phase_id`; zero readout communication |
 
 Preflight also requires available model/tokenizer and seed support only where
 scientific execution is authorized, verifies run-store nonexistence/write-once
@@ -279,8 +280,13 @@ resource projection are whole-set checks before the first downstream call.
 Runtime-only failures remain fail closed. Existing E0/E1 validators are not
 changed or weakened.
 
-**Current blocker:** no `final_vote_spec` can pass until Section H receives a
-human scientific decision.
+Preflight mechanically verifies two matched system cases per scenario; exactly
+one shared Source final call, two Target final calls, and two Relay final calls;
+one frozen post-update phase for every counted triplet; zero final-output
+visibility to another Agent; no stale seed as a vote; identical Source state and
+call reference across arms; correct Target/Relay branch mappings; and exactly
+two communication hops. Metadata-only condition, phase, run, and system-case
+fields must not alter `EffectiveGenerationIdentity`.
 
 ## G. `SRR_cond` and paired Relay contrast
 
@@ -317,81 +323,111 @@ probability.
 
 ## H. Final-vote construction decision
 
-### H.1 Determination: scientifically non-unique
+### H.1 RESOLVED BY HUMAN DECISION
 
-The frozen artifacts require three Source/Target/Relay post-update decisions
-with one `final_vote_phase_id`, but they define neither (a) whether E1/E2
-decisions may be reused as votes nor (b) the information visible to each Agent
-at a synchronized final phase. Current code produces only Target E1 decisions
-and Relay would produce awareness plus matched decisions. There is no Source
-post-update decision or final-vote orchestrator. Assigning the same phase ID
-after the fact would not establish a shared phase or matched visibility.
+**Option 2 — Synchronized Role-Specific Non-Communicative Final Readout** is
+human-frozen for the E2 Pilot. This resolves the former scientific ambiguity;
+it does not authorize implementation or scientific execution.
 
-Therefore the ten required questions cannot have one authority-derived answer:
+Communication remains exactly:
 
-1. **Source vote:** no frozen Source post-update call is selected.
-2. **Target vote:** either the E1 stale/current Target decision is reused or a
-   new synchronized Target call is generated; authority does not choose.
-3. **Relay vote:** either the matched E2 Relay decision is reused or a new
-   synchronized Relay call is generated; authority does not choose.
-4. Consequently, the number of additional calls is unresolved.
-5. Final-phase visibility (private branch history, full shared transcript, or
-   fixed role-specific exposure) is unresolved.
-6. The frozen causal chain supports Round/hop 1 = Source→Target and Round/hop 2
-   = Target→Relay, but does not state whether a subsequent final-decision call
-   is a readout within Round 2 or a prohibited third debate round.
-7. Compliance with `<=2` communication rounds is clear only if final decisions
-   are defined as non-communicative readouts; that definition is not frozen.
-8. A common phase ID can be mechanically verified only after the underlying
-   phase and visibility contract is chosen; merely relabeling cached calls is
-   invalid.
-9. Treatment/control systems could follow stale/current chains or differ only
-   in Target→Relay replay while reusing E1 arms; the required matched system
-   construction is not selected.
-10. These alternatives change whether Tier B/C majority is a contemporaneous
-    system state or an aggregate of causal-path decisions at different times.
+1. Round/Hop 1: Source → Target;
+2. Round/Hop 2: Target → Relay; then
+3. Final Readout Phase: a non-communicative measurement phase.
 
-### H.2 Competing minimal options requiring human decision
+The final readout is **not** a third debate/communication round. No readout
+output is shown to another Agent, no transcript is shared, and no new
+Agent→Agent information flows. All counted votes are new logical final-readout
+calls carrying the existing post-update `ScenarioRecord.final_vote_phase_id`.
+Historical E1/E2 calls are never relabeled as final votes.
 
-**Option 1 — Path-decision assembly.** Add one Source post-update decision;
-reuse the selected E1 Target arm and E2 Relay arm as the three votes, placing
-them under a common analytical phase. This minimizes calls but combines
-decisions made at different causal times and cannot truthfully establish one
-shared final phase merely by assigning an ID. It interprets FSCR as a
-path-aggregate majority.
+### H.2 Branch-local final-readout rule
 
-**Option 2 — Synchronized role-specific final readout.** After Relay matched
-replay, generate new Source, Target, and Relay decision calls as
-non-communicative readouts, with each role retaining its branch-specific
-history. This creates a genuine common phase but requires freezing role-specific
-visibility, deciding whether the final readout is inside the two-hop bound,
-and adding three calls per treatment/control system. It interprets FSCR as a
-simultaneous private-history system state.
+"Retains branch-local state" means: no new inter-Agent message is appended;
+awareness output remains excluded; the existing exposure history is unchanged;
+rendering uses the corresponding frozen branch; no transcript sharing, prior
+self-output injection, or treatment/control contamination occurs. A lightweight
+immutable fork may assign the existing final phase while preserving the exact
+model-visible branch state. It must not mutate an old snapshot or historical
+`CallRecord`.
 
-**Option 3 — Synchronized shared-transcript final readout.** Generate all three
-votes after exposing each role to one frozen shared post-update transcript.
-This yields a common phase but adds a new exposure/consensus intervention not
-specified by E2 and can alter the causal meaning of Tier B/C. It may constitute
-an extra debate round.
+`e2.py` reconstructs each manifest-validated branch snapshot and uses the
+existing immutable fork machinery to create measurement-only snapshots named
+`<scenario_id>:<condition>:snapshot`. Source forks from one post-update
+authoritative-current no-peer parent; Target stale/current forks respectively
+from the frozen E1 stale-peer/current-peer branch state; Relay stale/current
+forks respectively from the E2 stale-replay/current-replay branch state. Each
+fork retains the same visible exposure message IDs and current version as its
+parent, adds no message ID, and changes only snapshot identity/phase to the
+existing `ScenarioRecord.final_vote_phase_id`. Parent canonical bytes and
+historical calls remain unchanged.
 
-**Option 4 — Hybrid reuse plus refreshed missing roles.** Reuse Relay (and
-possibly Target), generate the remaining votes, and label all with one final
-phase. This has asymmetric decision times/visibility and a scientifically
-different consensus interpretation; it is not justified by cache economy.
+Use unchanged `render_decision` / `decision-v2` for these ordinary readouts if
+it expresses that state. No shared transcript, consensus prompt, new peer
+exposure, or feedback of a prior final answer is allowed. If `decision-v2`
+cannot express this design unchanged: **STOP — HUMAN DECISION REQUIRED**.
 
-No option is selected. The required resolution must state exact Source,
-Target, and Relay calls; each role's visible message IDs; treatment/control
-assembly; whether final readouts are a round; and the phase-ID rule. Until then:
+### H.3 Exact Source, Target, and Relay votes
 
-> **STOP — HUMAN DECISION REQUIRED**
+The **Source final vote** is a post-update authoritative-current no-peer
+readout: `v_new` is available, no Target/Relay evidence is visible, and the
+ordinary frozen answer mapping is mechanically graded. The pre-update `m_old`
+seed is historical exposure evidence only and is never the Source vote. This
+readout is not the E3 source-correction intervention; even a `CURRENT` result
+must not set `source_corrected=true` or alter E3 semantics.
 
-This stop does not authorize omitting FSCR, changing prompts, adding rounds, or
-modifying MAD-M² core.
+The **treatment Target vote** is a new logical readout from the frozen E1
+stale-peer branch-local state, retaining its historical Source stale exposure
+and receiving no Relay/final-phase message. The **control Target vote** is the
+corresponding readout from the frozen E1 current-peer branch-local state.
 
-## I. Three FSCR metric contracts (blocked on H only for data construction)
+The **treatment Relay vote** is a new logical readout from the E2 stale-replay
+branch-local state containing the exact frozen stale-Target replay. The
+**control Relay vote** is the corresponding readout from the E2 current-replay
+branch containing the exact frozen current-Target replay. Neither receives a
+new final-phase message.
+
+### H.4 Matched systems, conditions, and IDs
+
+Freeze two system cases per eligible scenario:
+
+* `<scenario_id>:e2-system:stale` — shared Source no-peer final, Target stale
+  final, Relay stale final;
+* `<scenario_id>:e2-system:current` — the identical shared Source call/message,
+  Target current final, Relay current final.
+
+Source is held fixed and no other treatment difference is introduced. Freeze
+logical condition names exactly as `source-final`, `target-stale-final`,
+`target-current-final`, `relay-stale-final`, and `relay-current-final`. These
+metadata conditions do not alter `EffectiveGenerationIdentity` unless the
+model-visible prompt actually differs.
+
+For each condition, freeze call ID
+`<e2_run_id>:<scenario_id>:<condition>:call` and generated message ID
+`<e2_run_id>:<scenario_id>:<condition>:output`. Each is a new logical
+`CallRecord`, may be a cache hit, and never overwrites a historical call. The
+record binds E2 run/scenario, both system-case references as applicable, role,
+condition, frozen final phase, snapshot and parent hash, prompt hash, answer
+class, cache provenance, and exact message ID. The single Source call/message
+is referenced by both system cases.
+
+### H.5 Round accounting and rejected alternatives
+
+Main communication rounds/hops equal `2`. Final readout adds no debate round
+because it introduces no Agent→Agent information flow. This accounting is
+human-frozen for the E2 Pilot.
+
+* **Option 1 — NOT SELECTED:** it lacks a genuine synchronized final phase.
+* **Option 3 — NOT SELECTED:** it adds a shared-transcript intervention.
+* **Option 4 — NOT SELECTED:** it creates asymmetric timing and visibility.
+
+The selected construction remains within three Agents, two communication hops,
+unchanged prompts/schemas, and the isolated E2 wrapper boundary.
+
+## I. Three FSCR metric contracts
 
 Proposed pure `evaluate_e2_fscr(final_votes, lineage_report,
-system_eligibility) -> dict` would implement the predicates once H is frozen.
+system_eligibility) -> dict` implements the predicates over the human-frozen synchronized readout records.
 
 | Metric | Denominator / eligibility | Numerator | IDs and exclusions | Label and `OTHER/INVALID` |
 | --- | --- | --- | --- | --- |
@@ -403,6 +439,17 @@ For all tiers, pre-update `m_old` is exposure evidence and is categorically
 rejected as a vote. Numerators and denominators, IDs, exclusions, counts, and
 rates are emitted separately; no tier implies another causal claim beyond its
 predicate.
+
+### I.1 Interpretation and claim boundary
+
+E2 FSCR is a diagnostic system-level characterization of final branch-local
+state after the frozen two-hop causal path. It is not an independent
+population-level propagation probability. E2 treatment cases are conditionally
+selected from E1 causal primary adopters, and Tier C additionally conditions on
+verified second-hop lineage; Retransmission-Supported FSCR may therefore be
+structurally correlated with `SRR_cond`. It must not be presented as
+statistically independent evidence of retransmission. Later result-to-claim
+work must preserve this limitation.
 
 ## J. Lineage contract
 
@@ -432,12 +479,19 @@ Source stale seed; Source→Target exposure; isolated Target awareness; E1
 treatment/control siblings and causal adoption; exact E1 Target origin;
 replay-envelope/provenance equality; Target→Relay exposure; isolated Relay
 awareness; Relay matched siblings; Relay treatment stale adoption; and,
-conditional on H, complete same-phase votes and tier membership. It rejects
+complete synchronized same-phase votes and tier membership. It rejects
 cycles, missing/duplicate edges, swapped arms, cross-scenario links, changed
 content, probe ancestry, mismatched parents, and phase relabeling. Existing
 three-field `LineageRecord` can represent graph edges unambiguously when joined
 to sealed records, so no schema change is indicated. If implementation proves
 otherwise: **STOP — HUMAN DECISION REQUIRED**.
+
+Final-readout membership uses only `final_vote_member`. There are no
+communication relations from `source-final` to `target-*-final`, from a
+`target-*-final` to a `relay-*-final`, or from any final output to another final
+output. The validator requires zero such edges and proves that no final output
+appears in another Agent's visible messages; final votes are branch-local
+measurements, not retransmitted messages.
 
 ## K. E2 run artifacts and manifest contract
 
@@ -453,10 +507,10 @@ final manifest. `e2.py` wraps existing `RunStore` and manifest functions; no
 | `upstream_e1_provenance.json` | resolver; before calls | E1 manifest/artifact identities and verified scientific constants | write once; manifest hash |
 | `upstream_replay_provenance.json` | envelope builder; before calls | Section-D rows for both arms | write once; manifest hash |
 | `branch_topology.json` | orchestrator; planned before and finalized without mutation before calls | parent/fork IDs/hashes and visible IDs for all siblings | write once only after complete plan; manifest hash |
-| `calls.jsonl` | RunStore; during calls | Relay and, after H, final-vote `CallRecord`s | append-only; final digest in manifest |
+| `calls.jsonl` | RunStore; during calls | Relay and five-per-scenario logical final-readout `CallRecord`s | append-only; final digest in manifest |
 | `messages/` | RunStore; before/during calls | exact replay envelopes and generated outputs | per-ID write once; inventory/digest table bound in manifest |
 | `lineage.jsonl` | RunStore; before/during calls | controlled Section-J edges | append-only; final digest in manifest |
-| `final_votes.jsonl` | final-vote assembler; after calls | system/arm, role, call/message, phase, class, eligibility | append-only; manifest hash; blocked pending H |
+| `final_votes.jsonl` | final-vote assembler; after calls | one row per system case: scenario/system-case ID, `arm=stale|current`, frozen phase, Source/Target/Relay call and message IDs and answer classes, completeness/exclusion, stale-majority, Tier-B and Tier-C predicates; paired rows reference the same Source call/message | append-only/write once; manifest hash |
 | `cache_provenance.json` | orchestrator; after calls | downstream identity hash, key, hit/miss, content/origin and usage | write once; manifest hash |
 | `report.json` | pure metrics; after calls | SRR, contrast, Gate 4, three FSCR tiers, exclusions, tokens | finalized once; manifest hash |
 | `manifest.json` | manifest wrapper; last | effective config, E1 external reference hashes, every E2 evidence hash, usage/cache stats | final write once; self-consistency check |
@@ -469,29 +523,31 @@ otherwise all named centrally.
 
 ## L. Token and call budget projection
 
-For eligible maximum `N=9`, the resolved retransmission core has exactly:
+For the frozen eligible maximum `N=9`, budget without assuming cache hits:
 
-* Relay awareness: `N = 9` logical calls;
-* Relay stale replay: `N = 9` logical calls;
-* Relay current replay: `N = 9` logical calls;
-* core total: `3N = 27` logical calls.
+| Logical calls | Formula | Maximum |
+| --- | --- | ---: |
+| Relay awareness | `N` | 9 |
+| Relay stale replay | `N` | 9 |
+| Relay current replay | `N` | 9 |
+| **Core subtotal** | `3N` | **27** |
+| Source final (shared across systems) | `N` | 9 |
+| Target stale final | `N` | 9 |
+| Target current final | `N` | 9 |
+| Relay stale final | `N` | 9 |
+| Relay current final | `N` | 9 |
+| **Final-readout subtotal** | `5N` | **45** |
+| **Total logical E2 calls** | `8N` | **72** |
+| **Upstream E1 regeneration** | `0` | **0** |
 
-Cache hits remain logical calls but generate zero new tokens. Upstream E1 calls
-are exactly zero.
-
-Final-vote ambiguity prevents one exact authorized total. Option 1 would add
-`N` Source calls (total `4N = 36`) if one treatment system is counted, while
-Option 2 would add `3N` for one system (total `6N = 54`) or `6N` for matched
-treatment/control systems (total `9N = 81`). Options 3/4 vary similarly. These
-figures are planning bounds, not authorization.
-
-Without running a tokenizer, even the conservative 81-call option at the
-frozen 32-output-token cap has at most `81 × 32 = 2,592` output tokens.
-Input-token usage is unresolved until final visibility is selected; nevertheless
-it would need to average more than roughly `9,844` total tokens per call to
-reach `0.8M`, far above the compact existing prompts. This demonstrates only a
-rough planning margin, not actual usage or tokenizer preflight. The authorized
-design must recompute a deterministic ceiling before scientific calls.
+New logical calls do not imply forced generation. An identical valid
+`EffectiveGenerationIdentity` must hit the existing cache, but budgeting assumes
+no hit. At `max_new_tokens=32`, `72 × 32 = 2,304` is the output-token upper
+bound if every logical call generates output. It is not a total-token bound;
+input tokens and therefore total E2 tokens remain unknown until a separately
+authorized tokenizer-only preflight if required. The compact design is plainly
+within the `0.8M` planning ceiling, but preflight must measure and enforce the
+full deterministic ceiling before scientific authorization.
 
 ## M. Model-free test map
 
@@ -523,15 +579,24 @@ by this planning task.
 | E1 regression preservation | existing E1 suite plus read-only before/after digest assertion |
 | resource, paths, backend, revisions, nine IDs | `validate_e2_preflight` |
 
-The common-phase/final-vote fixtures cannot be frozen beyond invariant tests
-until Section H is resolved. Every fixture is tiny and sealed; no tokenizer,
-model, vLLM, GPU, or network call is permitted.
+Final-readout fixtures additionally prove: exactly five logical calls per
+scenario; identical shared Source reference across arms; correct Target and
+Relay branch mappings; one frozen phase per triplet; no mixed arm IDs; no
+readout output in another Agent's visible messages; no final-output
+communication edge; no historical-call relabeling; cache-key reuse for
+identical effective inputs; metadata-only cache invariance; authoritative
+no-peer Source semantics without E3 correction status; no `m_old` vote; exactly
+two communication hops; mechanical recognition of non-communication; correct
+three-tier FSCR; and fail-closed Source-held-fixed validation.
+
+Every fixture is tiny and sealed; no tokenizer, model, vLLM, GPU, or network
+call is permitted.
 
 ## N. File/function implementation table
 
 | Path | Existing | Planned | Class | Inputs → outputs | Requirement / cache / lineage | Test / rollback / risk |
 | --- | --- | --- | --- | --- | --- | --- |
-| `state_mad/e2.py` | absent | immutable E2 records; `resolve_e1_replay_pair`; overlay/envelope/branch/request builders; orchestration; `assemble_final_votes` after H | NEW / WRAP | sealed E1 run + config → verified pairs, overlays, replay messages, calls/artifacts | exact read-only replay; upstream no cache/backend; downstream normal cache; owns cross-run IDs | Section-M resolver through phase tests; delete isolated file to roll back; high integrity/final-vote risk |
+| `state_mad/e2.py` | absent | immutable E2 records; `resolve_e1_replay_pair`; overlay/envelope/branch/request builders; orchestration; synchronized final-readout builder; `assemble_final_votes` | NEW / WRAP | sealed E1 run + config → verified pairs, overlays, replay messages, calls/artifacts | exact read-only replay; upstream no cache/backend; downstream normal cache; owns cross-run IDs | Section-M resolver through phase tests; delete isolated file to roll back; high integrity/final-vote risk |
 | `state_mad/preflight.py` | E0/E1 configs/validators | `E2RunConfig`, `validate_e2_preflight` | EXTEND | config + sealed plans/probes → pass/reasons | bounds and all fail-closed checks before calls; no cache-key change; validates lineage inputs | preflight matrix; revert E2-only additions; medium risk of weakening old gates (forbidden) |
 | `state_mad/lineage.py` | E0/E1 validators | `validate_e2_lineage` and fixed relation allowlist | EXTEND | records/provenance/topology → paths/tier predicates/errors | full two-hop/exact replay/final-phase path; cache IDs cross-checked | lineage adversarial tests; revert E2 functions; medium-high false-positive risk |
 | `state_mad/metrics.py` | E0/E1 pure metrics | `evaluate_e2_retransmission`, `evaluate_e2_fscr` | EXTEND | stored rows/validated predicates → deterministic report | SRR/contrast/Gate 4/FSCR; no cache or calls; consumes verified lineage | truth tables; revert E2 functions; high denominator/tier risk |
@@ -559,7 +624,7 @@ Every phase below is independently reviewable, has its own rollback, and says
 | P2-E2.3 whole-set preflight | `preflight.py`, `e2.py`, `test_e2.py` | all frozen fields, paths, resources, nine pairs before backend trap | E2 preflight commit only |
 | P2-E2.4 lineage | `lineage.py`, `e2.py`, `test_e2.py` | complete path plus swapped/cross-scenario/probe-contamination rejection | lineage commit only |
 | P2-E2.5 SRR/contrast | `metrics.py`, `test_e2.py` | denominator/OTHER/Gate-4 truth tables and conditional label | retransmission metrics commit only |
-| P2-E2.6 final votes/FSCR | `e2.py`, `lineage.py`, `metrics.py`, `test_e2.py` | only after H authorization: exact construction, common phase, seed exclusion, all tiers | dedicated final-vote commit; currently blocked |
+| P2-E2.6 synchronized role-specific non-communicative final readout + `final_votes.jsonl` + three FSCR metrics | `e2.py`, `preflight.py`, `lineage.py`, `metrics.py`, `test_e2.py` | five logical calls, matched systems/shared Source, branch isolation, common phase, no communication, seed exclusion, all tiers | dedicated final-readout/FSCR commit |
 | P2-E2.7 model-free regression | `test_e2.py` only unless a defect stays inside candidate scope | full E0/E1/E2 model-free suite, diff/artifact checks | test-only commit / revert offending subphase |
 
 If a defect requires any file outside the candidate scope, or a prompt/schema/
@@ -570,7 +635,7 @@ core change, stop rather than broadening a subphase.
 The stages are strictly manual gates:
 
 1. **E2 Implementation Map** — current task; planning only.
-2. **Human review** — must resolve Section H or direct a bounded revision.
+2. **Human review** — Section H is resolved; review this amended map.
 3. **Explicit bounded E2 implementation authorization** — names exact files
    and final-vote contract.
 4. **Model-free implementation/tests** — no scientific inference.
@@ -593,8 +658,9 @@ ambiguous, or mismatched; the frozen nine-case eligibility cannot be reproduced;
 exact text would require regeneration or normalization; origin provenance is
 unresolvable; Relay `v_new` or immutable siblings cannot be proved; awareness
 contaminates a decision; exact author presentation requires a prompt change;
-cache physical layout changes effective reuse; final-vote construction remains
-unresolved; more than three Agents/two hops, a new sample/model/seed/baseline,
+cache physical layout changes effective reuse; the frozen final-readout design
+cannot be implemented in the bounded files without prompt/schema/core change;
+more than three Agents/two hops, a new sample/model/seed/baseline,
 or the token ceiling would be required; another source file appears necessary;
 or any change to `src/**`, `multi_agent_debate.py`, `configs.yaml`, prompts,
 schema, E1 compiler/hash, or frozen research artifacts appears necessary.
@@ -604,14 +670,13 @@ scientific evidence.
 
 ## Final verdict
 
-**STOP — HUMAN DECISION REQUIRED**
+**READY FOR BOUNDED E2 IMPLEMENTATION AUTHORIZATION**
 
-The exact replay, overlay, Relay branching, cache, preflight, lineage,
-conditional retransmission, artifact, test, and bounded file contracts are
-implementation-ready. Implementation is nevertheless not authorized because
-the frozen authority does not uniquely select the three same-phase final votes
-or their visibility. Section H must be resolved scientifically before any E2
-implementation authorization.
+The human-frozen synchronized role-specific non-communicative final readout
+resolves the only prior scientific ambiguity. Static consistency review finds
+no new prompt, schema, MAD-M² core, Agent, round, model, seed, or scenario
+requirement. This verdict means ready for a separate explicit bounded
+authorization; it does not itself authorize implementation or execution.
 
 **NO GPU OR MODEL EXECUTION PERFORMED**
 **E2 IMPLEMENTATION NOT AUTHORIZED**
