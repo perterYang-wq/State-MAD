@@ -183,7 +183,7 @@ def _load_e1_run(e1_run_dir: str | Path, expectation: E1RunExpectation):
     messages=[_record(MessageRecord,row) for row in message_rows]
     by_message={m.message_id:m for m in messages}
     if len(by_message)!=len(messages): raise E2IntegrityError("DUPLICATE_MESSAGE_ID")
-    pairs={}; eligible=[]
+    pairs={}; eligible=[]; branch_grades={}
     for scenario in scenarios:
         scenario_id=scenario.scenario_id
         awareness = _one(calls, lambda x,sid=scenario_id: x.scenario_id == sid and x.condition == "awareness" and x.author == "target", "AWARENESS_SELECTOR")
@@ -234,17 +234,30 @@ def _load_e1_run(e1_run_dir: str | Path, expectation: E1RunExpectation):
             if any((prov.get("content_hash")!=message.content_hash,not prov.get("cache_key"),not prov.get("origin_call_id"),prov.get("origin_resolution") not in {"current_run","external_verified"},prov.get("origin_run_id")!=expectation.run_id)):
                 raise E2IntegrityError("CACHE_PROVENANCE_MISMATCH",condition)
             grade=grade_output(call.raw_output,scenario.answer_pool)
-            if call.raw_output!=f"ANSWER={grade.parsed_output}" or grade.status!="valid" or grade.answer_class!=call.answer_class:
-                raise E2IntegrityError("NONCANONICAL_ANSWER",condition)
+            if grade.answer_class!=call.answer_class or grade.parsed_output!=call.parsed_output:
+                raise E2IntegrityError("GRADE_EVIDENCE_MISMATCH",condition)
+            branch_grades[(scenario_id,condition)]=grade
             selections[condition] = E1ReplaySelection(condition,call,message,dict(prov),message.content_hash,parent_hash,peer)
         pair=ResolvedE1ReplayPair(scenario,selections["stale-peer"],selections["current-peer"],awareness,
                                   scenario_id+":pair",parent_hash,(),awareness_message)
-        if awareness.answer_class=="CURRENT" and selections["stale-peer"].call.answer_class=="STALE" and selections["current-peer"].call.answer_class!="STALE":
+        stale_grade=branch_grades[(scenario_id,"stale-peer")]
+        current_grade=branch_grades[(scenario_id,"current-peer")]
+        if awareness.answer_class=="CURRENT" and stale_grade.answer_class=="STALE" and current_grade.answer_class!="STALE":
             eligible.append(scenario_id)
         pairs[scenario_id]=pair
     recomputed=tuple(eligible)
     if recomputed!=expectation.eligible_ids or tuple(report.get("confirmed_treatment_only_stale_ids",()))!=recomputed:
         raise E2IntegrityError("ELIGIBLE_SET_MISMATCH")
+    for scenario_id in recomputed:
+        pair=pairs[scenario_id]
+        for condition,selection,expected_stale in (
+            ("stale-peer",pair.stale,True),("current-peer",pair.current,False)
+        ):
+            grade=branch_grades[(scenario_id,condition)]
+            if grade.status!="valid" or selection.call.raw_output!=f"ANSWER={grade.parsed_output}":
+                raise E2IntegrityError("NONCANONICAL_SELECTED_REPLAY",condition)
+            if (grade.answer_class=="STALE")!=expected_stale:
+                raise E2IntegrityError("SELECTED_REPLAY_CLASS_MISMATCH",condition)
     return {sid:replace(pair,eligible_ids=recomputed) for sid,pair in pairs.items()}, manifest, scenario_rows
 
 

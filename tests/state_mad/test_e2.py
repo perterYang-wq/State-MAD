@@ -95,9 +95,26 @@ def reseal(root):
     manifest=json.loads((root/"manifest.json").read_text())
     calls=[json.loads(x) for x in (root/"calls.jsonl").read_text().splitlines()]
     manifest["artifact_hashes"]["calls"]=digest(calls)
+    manifest["artifact_hashes"]["cache_provenance"]=digest(json.loads((root/"cache_provenance.json").read_text()))
     manifest["artifact_hashes"]["report"]=digest(json.loads((root/"report.json").read_text()))
     pre={k:v for k,v in manifest.items() if k not in {"ended_at","usage","cache_stats","manifest_hash"}}
     manifest["manifest_hash"]=digest(pre); (root/"manifest.json").write_text(json.dumps(manifest))
+
+
+def replace_branch_output(root, scenario_id, condition, raw_output, *, answer_class="OTHER/INVALID",
+                          parsed_output=None):
+    calls=[json.loads(line) for line in (root/"calls.jsonl").read_text().splitlines()]
+    row=next(x for x in calls if x["scenario_id"]==scenario_id and x["condition"]==condition)
+    row.update(raw_output=raw_output,answer_class=answer_class,parsed_output=parsed_output)
+    (root/"calls.jsonl").write_text("".join(json.dumps(x)+"\n" for x in calls))
+    message_path=root/"messages"/(row["message_id"]+".json")
+    message=json.loads(message_path.read_text()); message.update(raw_content=raw_output,content_hash=digest(raw_output))
+    message_path.write_text(json.dumps(message))
+    provenance=json.loads((root/"cache_provenance.json").read_text())
+    next(x for x in provenance if x["call_id"]==row["call_id"])["content_hash"]=message["content_hash"]
+    (root/"cache_provenance.json").write_text(json.dumps(provenance))
+    reseal(root)
+    return row, message_path
 
 
 def test_read_only_resolver_exact_replay_and_provenance(e1_dir):
@@ -115,6 +132,61 @@ def test_whole_run_recomputation_reads_all_forty(e1_dir):
     pairs=resolve_e1_replay_pairs(e1_dir[0],E1RunExpectation(tokenizer_revision=TOKENIZER_REVISION))
     assert tuple(p.scenario.scenario_id for p in pairs)==E2_ELIGIBLE_IDS
     assert all(p.eligible_ids==E2_ELIGIBLE_IDS for p in pairs)
+
+
+def test_real_pattern_noncanonical_outsiders_preserve_frozen_eligible_set(e1_dir):
+    root,_=e1_dir
+    observed=(("e1-01","stale-peer","BRAVO"),("e1-03","current-peer","DELTA"),
+        ("e1-07","current-peer","DELTA"),("e1-08","current-peer","ALPHA"),
+        ("e1-11","current-peer","DELTA"),("e1-13","stale-peer","BRAVO"),
+        ("e1-20","current-peer","ALPHA"),("e1-31","current-peer","DELTA"),
+        ("e1-32","current-peer","ALPHA"))
+    for scenario_id,condition,raw_output in observed:
+        replace_branch_output(root,scenario_id,condition,raw_output)
+    pairs=resolve_e1_replay_pairs(root,E1RunExpectation(tokenizer_revision=TOKENIZER_REVISION))
+    assert tuple(pair.scenario.scenario_id for pair in pairs)==E2_ELIGIBLE_IDS
+    assert all(pair.eligible_ids==E2_ELIGIBLE_IDS for pair in pairs)
+
+
+@pytest.mark.parametrize("field,value",[("answer_class","CURRENT"),("parsed_output","ALPHA")])
+def test_noncanonical_outsider_grade_tamper_fails_closed(e1_dir,field,value):
+    root,_=e1_dir
+    replace_branch_output(root,"e1-01","stale-peer","BRAVO")
+    calls=[json.loads(line) for line in (root/"calls.jsonl").read_text().splitlines()]
+    next(x for x in calls if x["scenario_id"]=="e1-01" and x["condition"]=="stale-peer")[field]=value
+    (root/"calls.jsonl").write_text("".join(json.dumps(x)+"\n" for x in calls)); reseal(root)
+    with pytest.raises(E2IntegrityError,match="GRADE_EVIDENCE_MISMATCH"): resolve(e1_dir)
+
+
+@pytest.mark.parametrize("mutation,code",[("message","MESSAGE_IDENTITY_MISMATCH"),
+    ("hash","CONTENT_HASH_MISMATCH"),("provenance","CACHE_PROVENANCE_MISMATCH")])
+def test_noncanonical_outsider_integrity_tamper_fails_closed(e1_dir,mutation,code):
+    root,_=e1_dir
+    row,message_path=replace_branch_output(root,"e1-01","stale-peer","BRAVO")
+    if mutation in {"message","hash"}:
+        message=json.loads(message_path.read_text())
+        message["raw_content" if mutation=="message" else "content_hash"]="tampered"
+        message_path.write_text(json.dumps(message))
+    else:
+        provenance=json.loads((root/"cache_provenance.json").read_text())
+        next(x for x in provenance if x["call_id"]==row["call_id"])["cache_key"]=""
+        (root/"cache_provenance.json").write_text(json.dumps(provenance)); reseal(root)
+    with pytest.raises(E2IntegrityError,match=code): resolve(e1_dir)
+
+
+def test_selected_replay_requires_exact_one_line_canonical_output(e1_dir):
+    root,s=e1_dir
+    replace_branch_output(root,"e1-04","stale-peer","note\nANSWER="+s.v_old,
+                          answer_class="STALE",parsed_output=s.v_old)
+    with pytest.raises(E2IntegrityError,match="NONCANONICAL_SELECTED_REPLAY"): resolve(e1_dir)
+
+
+@pytest.mark.parametrize("condition,answer_class",[("stale-peer","CURRENT"),("current-peer","STALE")])
+def test_selected_current_and_stale_semantics_remain_required(e1_dir,condition,answer_class):
+    root,s=e1_dir; value=s.v_new if answer_class=="CURRENT" else s.v_old
+    replace_branch_output(root,"e1-04",condition,"ANSWER="+value,
+                          answer_class=answer_class,parsed_output=value)
+    with pytest.raises(E2IntegrityError,match="ELIGIBLE_SET_MISMATCH"): resolve(e1_dir)
 
 
 @pytest.mark.parametrize("field,value,code",[("run_id","wrong","RUN_ID"),("scientific_sha","bad","SCIENTIFIC_SHA"),
